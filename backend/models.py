@@ -37,7 +37,11 @@ class Consulta(Base):
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
     fecha = Column(DateTime, default=datetime.utcnow)
     motivo = Column(Text)
+    signos_vitales = Column(Text)
+    sintomas = Column(Text)
     diagnostico = Column(Text)
     tratamiento = Column(Text)
+    observaciones = Column(Text)
+    medico = Column(String)
     
     paciente = relationship("Paciente", back_populates="consultas")
