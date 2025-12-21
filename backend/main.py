@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional
 from backend.database import engine, get_db, Base
-from backend import models, auth
+from backend import models, auth, fhir_converter
 
 Base.metadata.create_all(bind=engine)
 
@@ -63,17 +63,16 @@ class ConsultaCreate(BaseModel):
 
 @app.get("/")
 def root():
-    return {"mensaje": "API del Expediente Clínico Electrónico"}
+    return {"mensaje": "API del Expediente Clínico Electrónico con FHIR"}
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "database": "connected"}
+    return {"status": "ok", "database": "connected", "fhir": "enabled"}
 
 # ==================== AUTENTICACIÓN ====================
 
 @app.post("/api/auth/register", response_model=UsuarioResponse)
 def register(usuario: UsuarioCreate, db: Session = Depends(get_db)):
-    # Verificar si el usuario ya existe
     db_user = db.query(models.Usuario).filter(models.Usuario.username == usuario.username).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Usuario ya existe")
@@ -82,7 +81,6 @@ def register(usuario: UsuarioCreate, db: Session = Depends(get_db)):
     if db_email:
         raise HTTPException(status_code=400, detail="Email ya registrado")
     
-    # Crear nuevo usuario
     hashed_password = auth.get_password_hash(usuario.password)
     new_user = models.Usuario(
         username=usuario.username,
@@ -205,7 +203,7 @@ def crear_consulta(
         diagnostico=consulta.diagnostico,
         tratamiento=consulta.tratamiento,
         observaciones=consulta.observaciones,
-        medico=current_user.nombre_completo  # Usar el nombre del usuario autenticado
+        medico=current_user.nombre_completo
     )
     
     db.add(db_consulta)
@@ -236,3 +234,128 @@ def obtener_consulta(
     if not consulta:
         raise HTTPException(status_code=404, detail="Consulta no encontrada")
     return consulta
+
+# ==================== FHIR ENDPOINTS ====================
+
+@app.get("/fhir/Patient/{paciente_id}")
+def get_fhir_patient(
+    paciente_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtener paciente en formato FHIR"""
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+    if not paciente:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado")
+    
+    return fhir_converter.paciente_to_fhir(paciente)
+
+@app.post("/fhir/Patient")
+def create_fhir_patient(
+    fhir_patient: dict,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Crear paciente desde formato FHIR"""
+    try:
+        paciente_data = fhir_converter.fhir_to_paciente(fhir_patient)
+        
+        # Verificar si ya existe
+        existe = db.query(models.Paciente).filter(
+            models.Paciente.identificacion == paciente_data["identificacion"]
+        ).first()
+        
+        if existe:
+            raise HTTPException(status_code=400, detail="Paciente ya existe")
+        
+        # Crear paciente
+        db_paciente = models.Paciente(
+            identificacion=paciente_data["identificacion"],
+            nombre=paciente_data["nombre"],
+            apellidos=paciente_data["apellidos"],
+            fecha_nacimiento=datetime.fromisoformat(paciente_data["fecha_nacimiento"]) if paciente_data["fecha_nacimiento"] else None,
+            genero=paciente_data["genero"],
+            telefono=paciente_data["telefono"],
+            email=paciente_data["email"],
+            direccion=paciente_data["direccion"]
+        )
+        
+        db.add(db_paciente)
+        db.commit()
+        db.refresh(db_paciente)
+        
+        return fhir_converter.paciente_to_fhir(db_paciente)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error procesando FHIR: {str(e)}")
+
+@app.get("/fhir/Encounter/{consulta_id}")
+def get_fhir_encounter(
+    consulta_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtener consulta en formato FHIR Encounter"""
+    consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
+    if not consulta:
+        raise HTTPException(status_code=404, detail="Consulta no encontrada")
+    
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == consulta.paciente_id).first()
+    
+    return fhir_converter.consulta_to_fhir_encounter(consulta, paciente)
+
+@app.get("/fhir/Bundle/consulta/{consulta_id}")
+def get_fhir_bundle(
+    consulta_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtener consulta completa en formato FHIR Bundle"""
+    consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
+    if not consulta:
+        raise HTTPException(status_code=404, detail="Consulta no encontrada")
+    
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == consulta.paciente_id).first()
+    
+    return fhir_converter.consulta_to_fhir_bundle(consulta, paciente)
+
+@app.get("/fhir/Bundle/paciente/{paciente_id}")
+def get_patient_bundle(
+    paciente_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtener expediente completo del paciente en formato FHIR Bundle"""
+    from fhir.resources.bundle import Bundle, BundleEntry
+    
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+    if not paciente:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado")
+    
+    consultas = db.query(models.Consulta).filter(
+        models.Consulta.paciente_id == paciente_id
+    ).order_by(models.Consulta.fecha.desc()).all()
+    
+    # Crear bundle con paciente y todas sus consultas
+    entries = []
+    
+    # Agregar paciente
+    patient_fhir = fhir_converter.paciente_to_fhir(paciente)
+    entries.append(BundleEntry(
+        fullUrl=f"urn:uuid:patient-{paciente.id}",
+        resource=patient_fhir
+    ))
+    
+    # Agregar todas las consultas
+    for consulta in consultas:
+        encounter = fhir_converter.consulta_to_fhir_encounter(consulta, paciente)
+        entries.append(BundleEntry(
+            fullUrl=f"urn:uuid:encounter-{consulta.id}",
+            resource=encounter
+        ))
+    
+    bundle = Bundle(
+        type="collection",
+        entry=entries
+    )
+    
+    return bundle.dict()

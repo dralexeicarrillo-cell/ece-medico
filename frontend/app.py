@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 from datetime import datetime, date
+import json
 
 st.set_page_config(page_title="ECE Médico", page_icon="🏥", layout="wide")
 
@@ -126,7 +127,7 @@ else:
     
     menu = st.sidebar.selectbox(
         "Menú Principal",
-        ["Inicio", "Registrar Paciente", "Lista de Pacientes", "Nueva Consulta", "Historial de Consultas"]
+        ["Inicio", "Registrar Paciente", "Lista de Pacientes", "Nueva Consulta", "Historial de Consultas", "FHIR - Interoperabilidad"]
     )
     
     if menu == "Inicio":
@@ -134,7 +135,8 @@ else:
         
         response = api_request("GET", "/health")
         if response and response.status_code == 200:
-            st.success("✅ Conexión con el servidor exitosa")
+            data = response.json()
+            st.success(f"✅ Conexión con el servidor exitosa - FHIR: {data.get('fhir', 'disabled')}")
         else:
             st.error("❌ Error de conexión con el servidor")
         
@@ -342,3 +344,118 @@ else:
                                     st.write(c['observaciones'])
                     else:
                         st.info("📭 No hay consultas registradas para este paciente")
+    
+    elif menu == "FHIR - Interoperabilidad":
+        st.header("🌐 FHIR - Interoperabilidad de Datos")
+        
+        st.info("📋 FHIR (Fast Healthcare Interoperability Resources) es el estándar internacional para intercambio de información médica")
+        
+        tab1, tab2, tab3 = st.tabs(["Exportar Paciente", "Exportar Consulta", "Exportar Expediente Completo"])
+        
+        with tab1:
+            st.subheader("Exportar Paciente a formato FHIR")
+            
+            response = api_request("GET", "/api/pacientes")
+            if response and response.status_code == 200:
+                pacientes = response.json()
+                
+                if pacientes:
+                    opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
+                                         for p in pacientes}
+                    
+                    paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()), key="fhir_patient")
+                    paciente_id = opciones_pacientes[paciente_seleccionado]
+                    
+                    if st.button("🔄 Convertir a FHIR Patient"):
+                        response = api_request("GET", f"/fhir/Patient/{paciente_id}")
+                        if response and response.status_code == 200:
+                            fhir_data = response.json()
+                            st.success("✅ Conversión exitosa a formato FHIR")
+                            st.json(fhir_data)
+                            
+                            # Opción para descargar
+                            st.download_button(
+                                label="📥 Descargar JSON FHIR",
+                                data=json.dumps(fhir_data, indent=2),
+                                file_name=f"patient_{paciente_id}_fhir.json",
+                                mime="application/json"
+                            )
+                else:
+                    st.warning("No hay pacientes registrados")
+        
+        with tab2:
+            st.subheader("Exportar Consulta a formato FHIR Bundle")
+            
+            response = api_request("GET", "/api/pacientes")
+            if response and response.status_code == 200:
+                pacientes = response.json()
+                
+                if pacientes:
+                    opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
+                                         for p in pacientes}
+                    
+                    paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()), key="fhir_encounter")
+                    paciente_id = opciones_pacientes[paciente_seleccionado]
+                    
+                    # Obtener consultas del paciente
+                    response = api_request("GET", f"/api/consultas/paciente/{paciente_id}")
+                    if response and response.status_code == 200:
+                        consultas = response.json()
+                        
+                        if consultas:
+                            opciones_consultas = {f"{datetime.fromisoformat(c['fecha'].replace('Z', '+00:00')).strftime('%d/%m/%Y %H:%M')} - {c['motivo'][:30]}...": c['id'] 
+                                                for c in consultas}
+                            
+                            consulta_seleccionada = st.selectbox("Seleccionar Consulta", list(opciones_consultas.keys()))
+                            consulta_id = opciones_consultas[consulta_seleccionada]
+                            
+                            if st.button("🔄 Convertir a FHIR Bundle"):
+                                response = api_request("GET", f"/fhir/Bundle/consulta/{consulta_id}")
+                                if response and response.status_code == 200:
+                                    fhir_data = response.json()
+                                    st.success("✅ Conversión exitosa a formato FHIR Bundle")
+                                    st.json(fhir_data)
+                                    
+                                    st.download_button(
+                                        label="📥 Descargar Bundle FHIR",
+                                        data=json.dumps(fhir_data, indent=2),
+                                        file_name=f"consulta_{consulta_id}_fhir_bundle.json",
+                                        mime="application/json"
+                                    )
+                        else:
+                            st.info("No hay consultas para este paciente")
+        
+        with tab3:
+            st.subheader("Exportar Expediente Completo a formato FHIR Bundle")
+            
+            response = api_request("GET", "/api/pacientes")
+            if response and response.status_code == 200:
+                pacientes = response.json()
+                
+                if pacientes:
+                    opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
+                                         for p in pacientes}
+                    
+                    paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()), key="fhir_bundle")
+                    paciente_id = opciones_pacientes[paciente_seleccionado]
+                    
+                    if st.button("🔄 Exportar Expediente Completo"):
+                        response = api_request("GET", f"/fhir/Bundle/paciente/{paciente_id}")
+                        if response and response.status_code == 200:
+                            fhir_data = response.json()
+                            st.success("✅ Expediente completo exportado a formato FHIR Bundle")
+                            
+                            # Mostrar resumen
+                            num_entries = len(fhir_data.get('entry', []))
+                            st.info(f"📦 Bundle contiene {num_entries} recursos FHIR")
+                            
+                            st.json(fhir_data)
+                            
+                            st.download_button(
+                                label="📥 Descargar Expediente Completo FHIR",
+                                data=json.dumps(fhir_data, indent=2),
+                                file_name=f"expediente_paciente_{paciente_id}_fhir.json",
+                                mime="application/json"
+                            )
+                else:
+                    st.warning("No hay pacientes registrados")
