@@ -1,11 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from backend.database import engine, get_db, Base
-from backend import models
+from backend import models, auth
 
 Base.metadata.create_all(bind=engine)
 
@@ -20,6 +21,26 @@ app.add_middleware(
 )
 
 # Schemas
+class UsuarioCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+    nombre_completo: str
+    rol: str
+
+class UsuarioResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    nombre_completo: str
+    rol: str
+    activo: bool
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    usuario: UsuarioResponse
+
 class PacienteCreate(BaseModel):
     identificacion: str
     nombre: str
@@ -48,20 +69,98 @@ def root():
 def health_check():
     return {"status": "ok", "database": "connected"}
 
+# ==================== AUTENTICACIÓN ====================
+
+@app.post("/api/auth/register", response_model=UsuarioResponse)
+def register(usuario: UsuarioCreate, db: Session = Depends(get_db)):
+    # Verificar si el usuario ya existe
+    db_user = db.query(models.Usuario).filter(models.Usuario.username == usuario.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Usuario ya existe")
+    
+    db_email = db.query(models.Usuario).filter(models.Usuario.email == usuario.email).first()
+    if db_email:
+        raise HTTPException(status_code=400, detail="Email ya registrado")
+    
+    # Crear nuevo usuario
+    hashed_password = auth.get_password_hash(usuario.password)
+    new_user = models.Usuario(
+        username=usuario.username,
+        email=usuario.email,
+        hashed_password=hashed_password,
+        nombre_completo=usuario.nombre_completo,
+        rol=usuario.rol,
+        activo=True
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return new_user
+
+@app.post("/api/auth/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = auth.authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario o contraseña incorrectos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    if not user.activo:
+        raise HTTPException(status_code=400, detail="Usuario inactivo")
+    
+    access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth.create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "usuario": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "nombre_completo": user.nombre_completo,
+            "rol": user.rol,
+            "activo": user.activo
+        }
+    }
+
+@app.get("/api/auth/me", response_model=UsuarioResponse)
+def get_me(current_user: models.Usuario = Depends(auth.get_current_user)):
+    return current_user
+
+# ==================== PACIENTES ====================
+
 @app.get("/api/pacientes")
-def listar_pacientes(db: Session = Depends(get_db)):
+def listar_pacientes(
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     pacientes = db.query(models.Paciente).all()
     return pacientes
 
 @app.get("/api/pacientes/{paciente_id}")
-def obtener_paciente(paciente_id: int, db: Session = Depends(get_db)):
+def obtener_paciente(
+    paciente_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
     if not paciente:
         raise HTTPException(status_code=404, detail="Paciente no encontrado")
     return paciente
 
 @app.post("/api/pacientes")
-def crear_paciente(paciente: PacienteCreate, db: Session = Depends(get_db)):
+def crear_paciente(
+    paciente: PacienteCreate,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     existe = db.query(models.Paciente).filter(
         models.Paciente.identificacion == paciente.identificacion
     ).first()
@@ -86,8 +185,14 @@ def crear_paciente(paciente: PacienteCreate, db: Session = Depends(get_db)):
     
     return {"mensaje": "Paciente creado exitosamente", "id": db_paciente.id}
 
+# ==================== CONSULTAS ====================
+
 @app.post("/api/consultas")
-def crear_consulta(consulta: ConsultaCreate, db: Session = Depends(get_db)):
+def crear_consulta(
+    consulta: ConsultaCreate,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     paciente = db.query(models.Paciente).filter(models.Paciente.id == consulta.paciente_id).first()
     if not paciente:
         raise HTTPException(status_code=404, detail="Paciente no encontrado")
@@ -100,7 +205,7 @@ def crear_consulta(consulta: ConsultaCreate, db: Session = Depends(get_db)):
         diagnostico=consulta.diagnostico,
         tratamiento=consulta.tratamiento,
         observaciones=consulta.observaciones,
-        medico=consulta.medico
+        medico=current_user.nombre_completo  # Usar el nombre del usuario autenticado
     )
     
     db.add(db_consulta)
@@ -110,7 +215,11 @@ def crear_consulta(consulta: ConsultaCreate, db: Session = Depends(get_db)):
     return {"mensaje": "Consulta creada exitosamente", "id": db_consulta.id}
 
 @app.get("/api/consultas/paciente/{paciente_id}")
-def obtener_consultas_paciente(paciente_id: int, db: Session = Depends(get_db)):
+def obtener_consultas_paciente(
+    paciente_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     consultas = db.query(models.Consulta).filter(
         models.Consulta.paciente_id == paciente_id
     ).order_by(models.Consulta.fecha.desc()).all()
@@ -118,7 +227,11 @@ def obtener_consultas_paciente(paciente_id: int, db: Session = Depends(get_db)):
     return consultas
 
 @app.get("/api/consultas/{consulta_id}")
-def obtener_consulta(consulta_id: int, db: Session = Depends(get_db)):
+def obtener_consulta(
+    consulta_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
     if not consulta:
         raise HTTPException(status_code=404, detail="Consulta no encontrada")

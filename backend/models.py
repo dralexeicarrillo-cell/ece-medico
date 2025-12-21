@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from backend.database import Base
@@ -11,7 +11,8 @@ class Usuario(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     nombre_completo = Column(String)
-    rol = Column(String)
+    rol = Column(String)  # medico, enfermera, admin
+    activo = Column(Boolean, default=True)
     creado_en = Column(DateTime, default=datetime.utcnow)
 
 class Paciente(Base):
