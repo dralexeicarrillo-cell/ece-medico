@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from backend.database import engine, get_db, Base
 from backend import models, auth, fhir_converter
 
@@ -51,6 +51,11 @@ class PacienteCreate(BaseModel):
     email: str = ""
     direccion: str = ""
 
+class PacienteUpdate(BaseModel):
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    direccion: Optional[str] = None
+
 class ConsultaCreate(BaseModel):
     paciente_id: int
     motivo: str
@@ -60,6 +65,21 @@ class ConsultaCreate(BaseModel):
     tratamiento: Optional[str] = ""
     observaciones: Optional[str] = ""
     medico: str
+
+class CitaCreate(BaseModel):
+    paciente_id: int
+    medico_id: int
+    fecha_hora: str  # ISO format
+    duracion_minutos: int = 30
+    motivo: str
+    notas: Optional[str] = ""
+
+class CitaUpdate(BaseModel):
+    fecha_hora: Optional[str] = None
+    duracion_minutos: Optional[int] = None
+    motivo: Optional[str] = None
+    estado: Optional[str] = None
+    notas: Optional[str] = None
 
 @app.get("/")
 def root():
@@ -80,6 +100,11 @@ def register(usuario: UsuarioCreate, db: Session = Depends(get_db)):
     db_email = db.query(models.Usuario).filter(models.Usuario.email == usuario.email).first()
     if db_email:
         raise HTTPException(status_code=400, detail="Email ya registrado")
+    
+    # Validar rol
+    roles_validos = ["medico", "enfermera", "recepcion", "admin"]
+    if usuario.rol not in roles_validos:
+        raise HTTPException(status_code=400, detail=f"Rol inválido. Roles válidos: {', '.join(roles_validos)}")
     
     hashed_password = auth.get_password_hash(usuario.password)
     new_user = models.Usuario(
@@ -132,6 +157,17 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 def get_me(current_user: models.Usuario = Depends(auth.get_current_user)):
     return current_user
 
+# ==================== USUARIOS ====================
+
+@app.get("/api/usuarios")
+def listar_usuarios(
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Listar todos los usuarios activos"""
+    usuarios = db.query(models.Usuario).filter(models.Usuario.activo == True).all()
+    return usuarios
+
 # ==================== PACIENTES ====================
 
 @app.get("/api/pacientes")
@@ -139,6 +175,7 @@ def listar_pacientes(
     current_user: models.Usuario = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Listar pacientes - Acceso para todos los roles autenticados"""
     pacientes = db.query(models.Paciente).all()
     return pacientes
 
@@ -148,6 +185,7 @@ def obtener_paciente(
     current_user: models.Usuario = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Obtener paciente - Acceso para todos los roles autenticados"""
     paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
     if not paciente:
         raise HTTPException(status_code=404, detail="Paciente no encontrado")
@@ -156,9 +194,10 @@ def obtener_paciente(
 @app.post("/api/pacientes")
 def crear_paciente(
     paciente: PacienteCreate,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
     db: Session = Depends(get_db)
 ):
+    """Crear paciente - Solo recepción, médicos y admin"""
     existe = db.query(models.Paciente).filter(
         models.Paciente.identificacion == paciente.identificacion
     ).first()
@@ -183,14 +222,40 @@ def crear_paciente(
     
     return {"mensaje": "Paciente creado exitosamente", "id": db_paciente.id}
 
+@app.put("/api/pacientes/{paciente_id}")
+def actualizar_paciente(
+    paciente_id: int,
+    paciente_update: PacienteUpdate,
+    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Actualizar datos de contacto del paciente - Solo recepción y admin"""
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+    if not paciente:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado")
+    
+    # Actualizar solo campos permitidos (datos de contacto)
+    if paciente_update.telefono is not None:
+        paciente.telefono = paciente_update.telefono
+    if paciente_update.email is not None:
+        paciente.email = paciente_update.email
+    if paciente_update.direccion is not None:
+        paciente.direccion = paciente_update.direccion
+    
+    db.commit()
+    db.refresh(paciente)
+    
+    return {"mensaje": "Datos de contacto actualizados exitosamente"}
+
 # ==================== CONSULTAS ====================
 
 @app.post("/api/consultas")
 def crear_consulta(
     consulta: ConsultaCreate,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
     db: Session = Depends(get_db)
 ):
+    """Crear consulta - Solo médicos y admin"""
     paciente = db.query(models.Paciente).filter(models.Paciente.id == consulta.paciente_id).first()
     if not paciente:
         raise HTTPException(status_code=404, detail="Paciente no encontrado")
@@ -215,9 +280,10 @@ def crear_consulta(
 @app.get("/api/consultas/paciente/{paciente_id}")
 def obtener_consultas_paciente(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
+    """Ver consultas - Solo personal médico"""
     consultas = db.query(models.Consulta).filter(
         models.Consulta.paciente_id == paciente_id
     ).order_by(models.Consulta.fecha.desc()).all()
@@ -227,13 +293,186 @@ def obtener_consultas_paciente(
 @app.get("/api/consultas/{consulta_id}")
 def obtener_consulta(
     consulta_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
+    """Ver consulta específica - Solo personal médico"""
     consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
     if not consulta:
         raise HTTPException(status_code=404, detail="Consulta no encontrada")
     return consulta
+
+# ==================== CITAS ====================
+
+@app.post("/api/citas")
+def crear_cita(
+    cita: CitaCreate,
+    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    db: Session = Depends(get_db)
+):
+    """Crear cita - Recepción, médicos y admin"""
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
+    if not paciente:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado")
+    
+    medico = db.query(models.Usuario).filter(models.Usuario.id == cita.medico_id).first()
+    if not medico:
+        raise HTTPException(status_code=404, detail="Médico no encontrado")
+    
+    fecha_hora = datetime.fromisoformat(cita.fecha_hora)
+    fecha_fin = fecha_hora + timedelta(minutes=cita.duracion_minutos)
+    
+    conflictos = db.query(models.Cita).filter(
+        models.Cita.medico_id == cita.medico_id,
+        models.Cita.estado.in_(["programada", "confirmada"]),
+        models.Cita.fecha_hora < fecha_fin,
+        models.Cita.fecha_hora >= fecha_hora - timedelta(minutes=60)
+    ).first()
+    
+    if conflictos:
+        raise HTTPException(status_code=400, detail="El médico ya tiene una cita en ese horario")
+    
+    db_cita = models.Cita(
+        paciente_id=cita.paciente_id,
+        medico_id=cita.medico_id,
+        fecha_hora=fecha_hora,
+        duracion_minutos=cita.duracion_minutos,
+        motivo=cita.motivo,
+        notas=cita.notas,
+        estado="programada"
+    )
+    
+    db.add(db_cita)
+    db.commit()
+    db.refresh(db_cita)
+    
+    return {"mensaje": "Cita creada exitosamente", "id": db_cita.id}
+
+@app.get("/api/citas")
+def listar_citas(
+    fecha_desde: Optional[str] = None,
+    fecha_hasta: Optional[str] = None,
+    medico_id: Optional[int] = None,
+    paciente_id: Optional[int] = None,
+    estado: Optional[str] = None,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Listar citas - Todos los roles autenticados"""
+    query = db.query(models.Cita)
+    
+    if fecha_desde:
+        query = query.filter(models.Cita.fecha_hora >= datetime.fromisoformat(fecha_desde))
+    
+    if fecha_hasta:
+        query = query.filter(models.Cita.fecha_hora <= datetime.fromisoformat(fecha_hasta))
+    
+    if medico_id:
+        query = query.filter(models.Cita.medico_id == medico_id)
+    
+    if paciente_id:
+        query = query.filter(models.Cita.paciente_id == paciente_id)
+    
+    if estado:
+        query = query.filter(models.Cita.estado == estado)
+    
+    citas = query.order_by(models.Cita.fecha_hora).all()
+    
+    resultado = []
+    for cita in citas:
+        paciente = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
+        medico = db.query(models.Usuario).filter(models.Usuario.id == cita.medico_id).first()
+        
+        resultado.append({
+            "id": cita.id,
+            "paciente_id": cita.paciente_id,
+            "paciente_nombre": f"{paciente.nombre} {paciente.apellidos}" if paciente else "Desconocido",
+            "medico_id": cita.medico_id,
+            "medico_nombre": medico.nombre_completo if medico else "Desconocido",
+            "fecha_hora": cita.fecha_hora.isoformat(),
+            "duracion_minutos": cita.duracion_minutos,
+            "motivo": cita.motivo,
+            "estado": cita.estado,
+            "notas": cita.notas,
+            "creado_en": cita.creado_en.isoformat()
+        })
+    
+    return resultado
+
+@app.get("/api/citas/{cita_id}")
+def obtener_cita(
+    cita_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtener cita - Todos los roles autenticados"""
+    cita = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+    if not cita:
+        raise HTTPException(status_code=404, detail="Cita no encontrada")
+    
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
+    medico = db.query(models.Usuario).filter(models.Usuario.id == cita.medico_id).first()
+    
+    return {
+        "id": cita.id,
+        "paciente_id": cita.paciente_id,
+        "paciente_nombre": f"{paciente.nombre} {paciente.apellidos}" if paciente else "Desconocido",
+        "medico_id": cita.medico_id,
+        "medico_nombre": medico.nombre_completo if medico else "Desconocido",
+        "fecha_hora": cita.fecha_hora.isoformat(),
+        "duracion_minutos": cita.duracion_minutos,
+        "motivo": cita.motivo,
+        "estado": cita.estado,
+        "notas": cita.notas
+    }
+
+@app.put("/api/citas/{cita_id}")
+def actualizar_cita(
+    cita_id: int,
+    cita_update: CitaUpdate,
+    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    db: Session = Depends(get_db)
+):
+    """Actualizar cita - Recepción, médicos y admin"""
+    cita = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+    if not cita:
+        raise HTTPException(status_code=404, detail="Cita no encontrada")
+    
+    if cita_update.fecha_hora:
+        cita.fecha_hora = datetime.fromisoformat(cita_update.fecha_hora)
+    if cita_update.duracion_minutos:
+        cita.duracion_minutos = cita_update.duracion_minutos
+    if cita_update.motivo:
+        cita.motivo = cita_update.motivo
+    if cita_update.estado:
+        cita.estado = cita_update.estado
+    if cita_update.notas is not None:
+        cita.notas = cita_update.notas
+    
+    cita.actualizado_en = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(cita)
+    
+    return {"mensaje": "Cita actualizada exitosamente", "id": cita.id}
+
+@app.delete("/api/citas/{cita_id}")
+def cancelar_cita(
+    cita_id: int,
+    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    db: Session = Depends(get_db)
+):
+    """Cancelar cita - Recepción, médicos y admin"""
+    cita = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+    if not cita:
+        raise HTTPException(status_code=404, detail="Cita no encontrada")
+    
+    cita.estado = "cancelada"
+    cita.actualizado_en = datetime.utcnow()
+    
+    db.commit()
+    
+    return {"mensaje": "Cita cancelada exitosamente"}
 
 # ==================== FHIR ENDPOINTS ====================
 
@@ -243,7 +482,6 @@ def get_fhir_patient(
     current_user: models.Usuario = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Obtener paciente en formato FHIR"""
     paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
     if not paciente:
         raise HTTPException(status_code=404, detail="Paciente no encontrado")
@@ -253,14 +491,12 @@ def get_fhir_patient(
 @app.post("/fhir/Patient")
 def create_fhir_patient(
     fhir_patient: dict,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
     db: Session = Depends(get_db)
 ):
-    """Crear paciente desde formato FHIR"""
     try:
         paciente_data = fhir_converter.fhir_to_paciente(fhir_patient)
         
-        # Verificar si ya existe
         existe = db.query(models.Paciente).filter(
             models.Paciente.identificacion == paciente_data["identificacion"]
         ).first()
@@ -268,7 +504,6 @@ def create_fhir_patient(
         if existe:
             raise HTTPException(status_code=400, detail="Paciente ya existe")
         
-        # Crear paciente
         db_paciente = models.Paciente(
             identificacion=paciente_data["identificacion"],
             nombre=paciente_data["nombre"],
@@ -291,10 +526,9 @@ def create_fhir_patient(
 @app.get("/fhir/Encounter/{consulta_id}")
 def get_fhir_encounter(
     consulta_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
-    """Obtener consulta en formato FHIR Encounter"""
     consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
     if not consulta:
         raise HTTPException(status_code=404, detail="Consulta no encontrada")
@@ -306,10 +540,9 @@ def get_fhir_encounter(
 @app.get("/fhir/Bundle/consulta/{consulta_id}")
 def get_fhir_bundle(
     consulta_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
-    """Obtener consulta completa en formato FHIR Bundle"""
     consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
     if not consulta:
         raise HTTPException(status_code=404, detail="Consulta no encontrada")
@@ -321,10 +554,9 @@ def get_fhir_bundle(
 @app.get("/fhir/Bundle/paciente/{paciente_id}")
 def get_patient_bundle(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
-    """Obtener expediente completo del paciente en formato FHIR Bundle"""
     from fhir.resources.bundle import Bundle, BundleEntry
     
     paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
@@ -335,17 +567,14 @@ def get_patient_bundle(
         models.Consulta.paciente_id == paciente_id
     ).order_by(models.Consulta.fecha.desc()).all()
     
-    # Crear bundle con paciente y todas sus consultas
     entries = []
     
-    # Agregar paciente
     patient_fhir = fhir_converter.paciente_to_fhir(paciente)
     entries.append(BundleEntry(
         fullUrl=f"urn:uuid:patient-{paciente.id}",
         resource=patient_fhir
     ))
     
-    # Agregar todas las consultas
     for consulta in consultas:
         encounter = fhir_converter.consulta_to_fhir_encounter(consulta, paciente)
         entries.append(BundleEntry(

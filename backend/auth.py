@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
@@ -58,3 +58,52 @@ def authenticate_user(db: Session, username: str, password: str):
     if not verify_password(password, user.hashed_password):
         return False
     return user
+
+# Verificación de roles
+def require_roles(allowed_roles: List[str]):
+    """Decorador para verificar que el usuario tenga uno de los roles permitidos"""
+    def role_checker(current_user: models.Usuario = Depends(get_current_user)):
+        if current_user.rol not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Acceso denegado. Se requiere uno de estos roles: {', '.join(allowed_roles)}"
+            )
+        return current_user
+    return role_checker
+
+# Funciones de ayuda para roles específicos
+def get_current_admin(current_user: models.Usuario = Depends(get_current_user)):
+    """Solo administradores"""
+    if current_user.rol != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado. Se requiere rol de administrador"
+        )
+    return current_user
+
+def get_current_medico(current_user: models.Usuario = Depends(get_current_user)):
+    """Solo médicos"""
+    if current_user.rol != "medico":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado. Se requiere rol de médico"
+        )
+    return current_user
+
+def get_current_recepcion_or_admin(current_user: models.Usuario = Depends(get_current_user)):
+    """Recepción o Admin"""
+    if current_user.rol not in ["recepcion", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado. Se requiere rol de recepción o administrador"
+        )
+    return current_user
+
+def get_current_medico_or_admin(current_user: models.Usuario = Depends(get_current_user)):
+    """Médico o Admin"""
+    if current_user.rol not in ["medico", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado. Se requiere rol de médico o administrador"
+        )
+    return current_user
