@@ -876,3 +876,112 @@ else:
             st.error("❌ No tienes permisos para exportar datos FHIR. Esta función es solo para personal médico.")
         else:
             st.info("📋 FHIR (Fast Healthcare Interoperability Resources) es el estándar internacional para intercambio de información médica")
+            
+            tab1, tab2, tab3 = st.tabs(["Exportar Paciente", "Exportar Receta", "Importar Receta FHIR"])
+            
+            with tab1:
+                st.subheader("📤 Exportar Paciente a FHIR")
+                
+                response = api_request("GET", "/api/pacientes")
+                if response and response.status_code == 200:
+                    pacientes = response.json()
+                    
+                    if pacientes:
+                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
+                                             for p in pacientes}
+                        
+                        paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()))
+                        paciente_id = opciones_pacientes[paciente_seleccionado]
+                        
+                        if st.button("📥 Exportar a FHIR"):
+                            response = api_request("GET", f"/fhir/Patient/{paciente_id}")
+                            
+                            if response and response.status_code == 200:
+                                fhir_data = response.json()
+                                st.success("✅ Paciente exportado a FHIR")
+                                
+                                st.json(fhir_data)
+                                
+                                st.download_button(
+                                    label="⬇️ Descargar JSON",
+                                    data=json.dumps(fhir_data, indent=2),
+                                    file_name=f"paciente_{paciente_id}_fhir.json",
+                                    mime="application/json"
+                                )
+            
+            with tab2:
+                st.subheader("📤 Exportar Receta a FHIR")
+                
+                response = api_request("GET", "/api/pacientes")
+                if response and response.status_code == 200:
+                    pacientes = response.json()
+                    
+                    if pacientes:
+                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
+                                             for p in pacientes}
+                        
+                        paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()), key="export_receta_paciente")
+                        paciente_id = opciones_pacientes[paciente_seleccionado]
+                        
+                        # Obtener recetas del paciente
+                        response = api_request("GET", f"/api/recetas/paciente/{paciente_id}")
+                        if response and response.status_code == 200:
+                            recetas = response.json()
+                            
+                            if recetas:
+                                opciones_recetas = {f"Receta #{r['id']} - {r['fecha_emision'][:10]}": r['id'] 
+                                                   for r in recetas}
+                                
+                                receta_seleccionada = st.selectbox("Seleccionar Receta", list(opciones_recetas.keys()))
+                                receta_id = opciones_recetas[receta_seleccionada]
+                                
+                                if st.button("📥 Exportar Receta a FHIR"):
+                                    response = api_request("GET", f"/api/recetas/{receta_id}/fhir")
+                                    
+                                    if response and response.status_code == 200:
+                                        fhir_data = response.json()
+                                        st.success("✅ Receta exportada a FHIR Bundle")
+                                        
+                                        st.json(fhir_data)
+                                        
+                                        st.download_button(
+                                            label="⬇️ Descargar FHIR Bundle (JSON)",
+                                            data=json.dumps(fhir_data, indent=2),
+                                            file_name=f"receta_{receta_id}_fhir_bundle.json",
+                                            mime="application/json"
+                                        )
+                            else:
+                                st.info("No hay recetas para este paciente")
+            
+            with tab3:
+                st.subheader("📥 Importar Receta desde FHIR Bundle")
+                
+                if st.session_state.usuario['rol'] not in ['medico', 'admin']:
+                    st.error("❌ Solo médicos y administradores pueden importar recetas.")
+                else:
+                    st.info("⚠️ El paciente debe estar previamente registrado en el sistema")
+                    
+                    fhir_json = st.text_area(
+                        "Pegar JSON de FHIR Bundle aquí:",
+                        height=300,
+                        placeholder='{"resourceType": "Bundle", "type": "collection", ...}'
+                    )
+                    
+                    if st.button("⬆️ Importar Receta"):
+                        if not fhir_json:
+                            st.error("Por favor pega el JSON del FHIR Bundle")
+                        else:
+                            try:
+                                fhir_data = json.loads(fhir_json)
+                                
+                                response = api_request("POST", "/api/recetas/fhir/import", fhir_data)
+                                
+                                if response and response.status_code == 200:
+                                    result = response.json()
+                                    st.success(f"✅ {result['mensaje']}")
+                                    st.info(f"ID de la nueva receta: {result['id']}")
+                                    st.balloons()
+                                elif response:
+                                    st.error(f"❌ Error: {response.json().get('detail')}")
+                            except json.JSONDecodeError:
+                                st.error("❌ El JSON proporcionado no es válido")

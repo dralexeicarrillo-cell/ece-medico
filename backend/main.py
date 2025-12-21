@@ -684,6 +684,86 @@ async def descargar_receta_pdf(
         media_type='application/pdf',
         filename=f"receta_{receta_id}.pdf"
     )
+# ==================== RECETAS - FHIR ====================
+
+@app.get("/api/recetas/{receta_id}/fhir")
+def exportar_receta_fhir(
+    receta_id: int,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Exportar receta a formato FHIR Bundle"""
+    receta = db.query(models.Receta).filter(models.Receta.id == receta_id).first()
+    if not receta:
+        raise HTTPException(status_code=404, detail="Receta no encontrada")
+    
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == receta.paciente_id).first()
+    medico = db.query(models.Usuario).filter(models.Usuario.id == receta.medico_id).first()
+    
+    return fhir_converter.receta_to_fhir_bundle(receta, paciente, medico)
+
+
+@app.post("/api/recetas/fhir/import")
+def importar_receta_fhir(
+    fhir_bundle: dict,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Importar receta desde formato FHIR Bundle"""
+    try:
+        receta_data = fhir_converter.fhir_to_receta(fhir_bundle, db)
+        
+        if "paciente_id" not in receta_data:
+            raise HTTPException(status_code=400, detail="No se pudo identificar al paciente en el Bundle FHIR")
+        
+        # Validar que al menos tenga medicamento1
+        if not receta_data.get("medicamento1_nombre"):
+            raise HTTPException(status_code=400, detail="La receta debe tener al menos un medicamento")
+        
+        # Crear receta
+        db_receta = models.Receta(
+            paciente_id=receta_data["paciente_id"],
+            medico_id=current_user.id,
+            medicamento1_nombre=receta_data.get("medicamento1_nombre"),
+            medicamento1_dosis=receta_data.get("medicamento1_dosis", ""),
+            medicamento1_frecuencia=receta_data.get("medicamento1_frecuencia", ""),
+            medicamento1_duracion=receta_data.get("medicamento1_duracion", ""),
+            medicamento1_via=receta_data.get("medicamento1_via", "Oral"),
+            medicamento2_nombre=receta_data.get("medicamento2_nombre"),
+            medicamento2_dosis=receta_data.get("medicamento2_dosis"),
+            medicamento2_frecuencia=receta_data.get("medicamento2_frecuencia"),
+            medicamento2_duracion=receta_data.get("medicamento2_duracion"),
+            medicamento2_via=receta_data.get("medicamento2_via"),
+            medicamento3_nombre=receta_data.get("medicamento3_nombre"),
+            medicamento3_dosis=receta_data.get("medicamento3_dosis"),
+            medicamento3_frecuencia=receta_data.get("medicamento3_frecuencia"),
+            medicamento3_duracion=receta_data.get("medicamento3_duracion"),
+            medicamento3_via=receta_data.get("medicamento3_via"),
+            medicamento4_nombre=receta_data.get("medicamento4_nombre"),
+            medicamento4_dosis=receta_data.get("medicamento4_dosis"),
+            medicamento4_frecuencia=receta_data.get("medicamento4_frecuencia"),
+            medicamento4_duracion=receta_data.get("medicamento4_duracion"),
+            medicamento4_via=receta_data.get("medicamento4_via"),
+            medicamento5_nombre=receta_data.get("medicamento5_nombre"),
+            medicamento5_dosis=receta_data.get("medicamento5_dosis"),
+            medicamento5_frecuencia=receta_data.get("medicamento5_frecuencia"),
+            medicamento5_duracion=receta_data.get("medicamento5_duracion"),
+            medicamento5_via=receta_data.get("medicamento5_via"),
+            indicaciones_generales=receta_data.get("indicaciones_generales"),
+            activa=True
+        )
+        
+        db.add(db_receta)
+        db.commit()
+        db.refresh(db_receta)
+        
+        return {
+            "mensaje": "Receta importada exitosamente desde FHIR",
+            "id": db_receta.id
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error procesando FHIR: {str(e)}")
 
 # ==================== FHIR ENDPOINTS ====================
 
