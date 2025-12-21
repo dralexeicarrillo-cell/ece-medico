@@ -1,12 +1,14 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional, List
 from backend.database import engine, get_db, Base
 from backend import models, auth, fhir_converter
+from backend.pdf_generator import generar_receta_pdf
 
 Base.metadata.create_all(bind=engine)
 
@@ -80,6 +82,35 @@ class CitaUpdate(BaseModel):
     motivo: Optional[str] = None
     estado: Optional[str] = None
     notas: Optional[str] = None
+
+class RecetaCreate(BaseModel):
+    paciente_id: int
+    medicamento1_nombre: str
+    medicamento1_dosis: str
+    medicamento1_frecuencia: str
+    medicamento1_duracion: str
+    medicamento1_via: str
+    medicamento2_nombre: Optional[str] = None
+    medicamento2_dosis: Optional[str] = None
+    medicamento2_frecuencia: Optional[str] = None
+    medicamento2_duracion: Optional[str] = None
+    medicamento2_via: Optional[str] = None
+    medicamento3_nombre: Optional[str] = None
+    medicamento3_dosis: Optional[str] = None
+    medicamento3_frecuencia: Optional[str] = None
+    medicamento3_duracion: Optional[str] = None
+    medicamento3_via: Optional[str] = None
+    medicamento4_nombre: Optional[str] = None
+    medicamento4_dosis: Optional[str] = None
+    medicamento4_frecuencia: Optional[str] = None
+    medicamento4_duracion: Optional[str] = None
+    medicamento4_via: Optional[str] = None
+    medicamento5_nombre: Optional[str] = None
+    medicamento5_dosis: Optional[str] = None
+    medicamento5_frecuencia: Optional[str] = None
+    medicamento5_duracion: Optional[str] = None
+    medicamento5_via: Optional[str] = None
+    indicaciones_generales: Optional[str] = None
 
 @app.get("/")
 def root():
@@ -473,6 +504,186 @@ def cancelar_cita(
     db.commit()
     
     return {"mensaje": "Cita cancelada exitosamente"}
+
+# ==================== RECETAS MÉDICAS ====================
+
+@app.post("/api/recetas")
+def crear_receta(
+    receta: RecetaCreate,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Crear receta médica - Solo médicos y admin"""
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == receta.paciente_id).first()
+    if not paciente:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado")
+    
+    db_receta = models.Receta(
+        paciente_id=receta.paciente_id,
+        medico_id=current_user.id,
+        medicamento1_nombre=receta.medicamento1_nombre,
+        medicamento1_dosis=receta.medicamento1_dosis,
+        medicamento1_frecuencia=receta.medicamento1_frecuencia,
+        medicamento1_duracion=receta.medicamento1_duracion,
+        medicamento1_via=receta.medicamento1_via,
+        medicamento2_nombre=receta.medicamento2_nombre,
+        medicamento2_dosis=receta.medicamento2_dosis,
+        medicamento2_frecuencia=receta.medicamento2_frecuencia,
+        medicamento2_duracion=receta.medicamento2_duracion,
+        medicamento2_via=receta.medicamento2_via,
+        medicamento3_nombre=receta.medicamento3_nombre,
+        medicamento3_dosis=receta.medicamento3_dosis,
+        medicamento3_frecuencia=receta.medicamento3_frecuencia,
+        medicamento3_duracion=receta.medicamento3_duracion,
+        medicamento3_via=receta.medicamento3_via,
+        medicamento4_nombre=receta.medicamento4_nombre,
+        medicamento4_dosis=receta.medicamento4_dosis,
+        medicamento4_frecuencia=receta.medicamento4_frecuencia,
+        medicamento4_duracion=receta.medicamento4_duracion,
+        medicamento4_via=receta.medicamento4_via,
+        medicamento5_nombre=receta.medicamento5_nombre,
+        medicamento5_dosis=receta.medicamento5_dosis,
+        medicamento5_frecuencia=receta.medicamento5_frecuencia,
+        medicamento5_duracion=receta.medicamento5_duracion,
+        medicamento5_via=receta.medicamento5_via,
+        indicaciones_generales=receta.indicaciones_generales,
+        activa=True
+    )
+    
+    db.add(db_receta)
+    db.commit()
+    db.refresh(db_receta)
+    
+    return {"mensaje": "Receta creada exitosamente", "id": db_receta.id}
+
+@app.get("/api/recetas/paciente/{paciente_id}")
+def obtener_recetas_paciente(
+    paciente_id: int,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Ver recetas del paciente - Personal médico"""
+    recetas = db.query(models.Receta).filter(
+        models.Receta.paciente_id == paciente_id
+    ).order_by(models.Receta.fecha_emision.desc()).all()
+    
+    resultado = []
+    for r in recetas:
+        medico = db.query(models.Usuario).filter(models.Usuario.id == r.medico_id).first()
+        resultado.append({
+            "id": r.id,
+            "paciente_id": r.paciente_id,
+            "medico_id": r.medico_id,
+            "medico_nombre": medico.nombre_completo if medico else "Desconocido",
+            "fecha_emision": r.fecha_emision.isoformat(),
+            "medicamento1_nombre": r.medicamento1_nombre,
+            "medicamento1_dosis": r.medicamento1_dosis,
+            "medicamento1_frecuencia": r.medicamento1_frecuencia,
+            "medicamento1_duracion": r.medicamento1_duracion,
+            "medicamento1_via": r.medicamento1_via,
+            "medicamento2_nombre": r.medicamento2_nombre,
+            "medicamento2_dosis": r.medicamento2_dosis,
+            "medicamento2_frecuencia": r.medicamento2_frecuencia,
+            "medicamento2_duracion": r.medicamento2_duracion,
+            "medicamento2_via": r.medicamento2_via,
+            "medicamento3_nombre": r.medicamento3_nombre,
+            "medicamento3_dosis": r.medicamento3_dosis,
+            "medicamento3_frecuencia": r.medicamento3_frecuencia,
+            "medicamento3_duracion": r.medicamento3_duracion,
+            "medicamento3_via": r.medicamento3_via,
+            "medicamento4_nombre": r.medicamento4_nombre,
+            "medicamento4_dosis": r.medicamento4_dosis,
+            "medicamento4_frecuencia": r.medicamento4_frecuencia,
+            "medicamento4_duracion": r.medicamento4_duracion,
+            "medicamento4_via": r.medicamento4_via,
+            "medicamento5_nombre": r.medicamento5_nombre,
+            "medicamento5_dosis": r.medicamento5_dosis,
+            "medicamento5_frecuencia": r.medicamento5_frecuencia,
+            "medicamento5_duracion": r.medicamento5_duracion,
+            "medicamento5_via": r.medicamento5_via,
+            "indicaciones_generales": r.indicaciones_generales,
+            "activa": r.activa
+        })
+    
+    return resultado
+
+@app.get("/api/recetas/{receta_id}/pdf")
+async def descargar_receta_pdf(
+    receta_id: int,
+    current_user: models.Usuario = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Genera y descarga PDF de receta"""
+    
+    receta = db.query(models.Receta).filter(models.Receta.id == receta_id).first()
+    if not receta:
+        raise HTTPException(status_code=404, detail="Receta no encontrada")
+    
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == receta.paciente_id).first()
+    medico = db.query(models.Usuario).filter(models.Usuario.id == receta.medico_id).first()
+    
+    # Preparar datos
+    medicamentos = []
+    if receta.medicamento1_nombre:
+        medicamentos.append({
+            'nombre': receta.medicamento1_nombre,
+            'dosis': receta.medicamento1_dosis,
+            'frecuencia': receta.medicamento1_frecuencia,
+            'duracion': receta.medicamento1_duracion,
+            'via': receta.medicamento1_via
+        })
+    if receta.medicamento2_nombre:
+        medicamentos.append({
+            'nombre': receta.medicamento2_nombre,
+            'dosis': receta.medicamento2_dosis,
+            'frecuencia': receta.medicamento2_frecuencia,
+            'duracion': receta.medicamento2_duracion,
+            'via': receta.medicamento2_via
+        })
+    if receta.medicamento3_nombre:
+        medicamentos.append({
+            'nombre': receta.medicamento3_nombre,
+            'dosis': receta.medicamento3_dosis,
+            'frecuencia': receta.medicamento3_frecuencia,
+            'duracion': receta.medicamento3_duracion,
+            'via': receta.medicamento3_via
+        })
+    if receta.medicamento4_nombre:
+        medicamentos.append({
+            'nombre': receta.medicamento4_nombre,
+            'dosis': receta.medicamento4_dosis,
+            'frecuencia': receta.medicamento4_frecuencia,
+            'duracion': receta.medicamento4_duracion,
+            'via': receta.medicamento4_via
+        })
+    if receta.medicamento5_nombre:
+        medicamentos.append({
+            'nombre': receta.medicamento5_nombre,
+            'dosis': receta.medicamento5_dosis,
+            'frecuencia': receta.medicamento5_frecuencia,
+            'duracion': receta.medicamento5_duracion,
+            'via': receta.medicamento5_via
+        })
+    
+    receta_data = {
+        'id': receta.id,
+        'fecha': receta.fecha_emision.strftime('%d/%m/%Y'),
+        'medico_nombre': medico.nombre_completo,
+        'medico_codigo': medico.codigo_medico or "N/A",
+        'paciente_nombre': f"{paciente.nombre} {paciente.apellidos}",
+        'paciente_id': paciente.identificacion,
+        'medicamentos': medicamentos,
+        'indicaciones': receta.indicaciones_generales
+    }
+    
+    # Generar PDF
+    pdf_path = generar_receta_pdf(receta_data)
+    
+    return FileResponse(
+        pdf_path,
+        media_type='application/pdf',
+        filename=f"receta_{receta_id}.pdf"
+    )
 
 # ==================== FHIR ENDPOINTS ====================
 

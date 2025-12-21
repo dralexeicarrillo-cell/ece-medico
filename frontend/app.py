@@ -132,7 +132,7 @@ else:
     
     menu = st.sidebar.selectbox(
         "Menú Principal",
-        ["Inicio", "Agendamiento", "Registrar Paciente", "Lista de Pacientes", "Editar Paciente", "Nueva Consulta", "Historial de Consultas", "FHIR - Interoperabilidad"]
+        ["Inicio", "Agendamiento", "Registrar Paciente", "Lista de Pacientes", "Editar Paciente", "Nueva Consulta", "Historial de Consultas", "Recetas Médicas", "FHIR - Interoperabilidad"]
     )
     
     if menu == "Inicio":
@@ -628,6 +628,245 @@ else:
                                         st.write(c['observaciones'])
                         else:
                             st.info("📭 No hay consultas registradas para este paciente")
+    
+    elif menu == "Recetas Médicas":
+        st.header("💊 Gestión de Recetas Médicas")
+        
+        # Verificar permisos
+        if st.session_state.usuario['rol'] not in ['medico', 'admin']:
+            st.error("❌ No tienes permisos para emitir recetas. Esta función es solo para médicos.")
+        else:
+            tab1, tab2 = st.tabs(["Nueva Receta", "Historial de Recetas"])
+            
+            with tab1:
+                st.subheader("📝 Emitir Nueva Receta")
+                
+                response = api_request("GET", "/api/pacientes")
+                if response and response.status_code == 200:
+                    pacientes = response.json()
+                    
+                    if not pacientes:
+                        st.warning("⚠️ No hay pacientes registrados.")
+                    else:
+                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
+                                             for p in pacientes}
+                        
+                        paciente_seleccionado = st.selectbox("Seleccionar Paciente *", list(opciones_pacientes.keys()))
+                        paciente_id = opciones_pacientes[paciente_seleccionado]
+                        
+                        with st.form("form_receta"):
+                            st.subheader("Medicamentos (mínimo 1, máximo 5)")
+                            
+                            # Medicamento 1 (obligatorio)
+                            st.markdown("#### Medicamento 1 *")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                med1_nombre = st.text_input("Nombre *", key="med1_nombre")
+                                med1_dosis = st.text_input("Dosis *", placeholder="500mg", key="med1_dosis")
+                                med1_frecuencia = st.text_input("Frecuencia *", placeholder="Cada 8 horas", key="med1_frecuencia")
+                            with col2:
+                                med1_duracion = st.text_input("Duración *", placeholder="7 días", key="med1_duracion")
+                                med1_via = st.selectbox("Vía de Administración *", 
+                                                 ["Oral", "Intramuscular", "Intravenosa", "Subcutánea", "Tópica", "Oftálmica", "Ótica"],
+                                                 key="med1_via")
+                            
+                            # Medicamentos opcionales 2-5
+                            with st.expander("Medicamento 2 (opcional)"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    med2_nombre = st.text_input("Nombre", key="med2_nombre")
+                                    med2_dosis = st.text_input("Dosis", placeholder="500mg", key="med2_dosis")
+                                    med2_frecuencia = st.text_input("Frecuencia", placeholder="Cada 8 horas", key="med2_frecuencia")
+                                with col2:
+                                    med2_duracion = st.text_input("Duración", placeholder="7 días", key="med2_duracion")
+                                    med2_via = st.selectbox("Vía de Administración", 
+                                                     ["Oral", "Intramuscular", "Intravenosa", "Subcutánea", "Tópica", "Oftálmica", "Ótica"],
+                                                     key="med2_via")
+                            
+                            with st.expander("Medicamento 3 (opcional)"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    med3_nombre = st.text_input("Nombre", key="med3_nombre")
+                                    med3_dosis = st.text_input("Dosis", placeholder="500mg", key="med3_dosis")
+                                    med3_frecuencia = st.text_input("Frecuencia", placeholder="Cada 8 horas", key="med3_frecuencia")
+                                with col2:
+                                    med3_duracion = st.text_input("Duración", placeholder="7 días", key="med3_duracion")
+                                    med3_via = st.selectbox("Vía de Administración", 
+                                                     ["Oral", "Intramuscular", "Intravenosa", "Subcutánea", "Tópica", "Oftálmica", "Ótica"],
+                                                     key="med3_via")
+                            
+                            with st.expander("Medicamento 4 (opcional)"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    med4_nombre = st.text_input("Nombre", key="med4_nombre")
+                                    med4_dosis = st.text_input("Dosis", placeholder="500mg", key="med4_dosis")
+                                    med4_frecuencia = st.text_input("Frecuencia", placeholder="Cada 8 horas", key="med4_frecuencia")
+                                with col2:
+                                    med4_duracion = st.text_input("Duración", placeholder="7 días", key="med4_duracion")
+                                    med4_via = st.selectbox("Vía de Administración", 
+                                                     ["Oral", "Intramuscular", "Intravenosa", "Subcutánea", "Tópica", "Oftálmica", "Ótica"],
+                                                     key="med4_via")
+                            
+                            with st.expander("Medicamento 5 (opcional)"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    med5_nombre = st.text_input("Nombre", key="med5_nombre")
+                                    med5_dosis = st.text_input("Dosis", placeholder="500mg", key="med5_dosis")
+                                    med5_frecuencia = st.text_input("Frecuencia", placeholder="Cada 8 horas", key="med5_frecuencia")
+                                with col2:
+                                    med5_duracion = st.text_input("Duración", placeholder="7 días", key="med5_duracion")
+                                    med5_via = st.selectbox("Vía de Administración", 
+                                                     ["Oral", "Intramuscular", "Intravenosa", "Subcutánea", "Tópica", "Oftálmica", "Ótica"],
+                                                     key="med5_via")
+                            
+                            indicaciones = st.text_area("Indicaciones Generales", height=100)
+                            
+                            submitted = st.form_submit_button("✅ Emitir Receta")
+                            
+                            if submitted:
+                                if not med1_nombre or not med1_dosis or not med1_frecuencia or not med1_duracion:
+                                    st.error("Debes completar al menos el medicamento 1 con todos sus campos obligatorios")
+                                else:
+                                    datos_receta = {
+                                        "paciente_id": paciente_id,
+                                        "medicamento1_nombre": med1_nombre,
+                                        "medicamento1_dosis": med1_dosis,
+                                        "medicamento1_frecuencia": med1_frecuencia,
+                                        "medicamento1_duracion": med1_duracion,
+                                        "medicamento1_via": med1_via,
+                                        "indicaciones_generales": indicaciones
+                                    }
+                                    
+                                    # Agregar medicamentos opcionales solo si tienen nombre
+                                    if med2_nombre:
+                                        datos_receta.update({
+                                            "medicamento2_nombre": med2_nombre,
+                                            "medicamento2_dosis": med2_dosis,
+                                            "medicamento2_frecuencia": med2_frecuencia,
+                                            "medicamento2_duracion": med2_duracion,
+                                            "medicamento2_via": med2_via
+                                        })
+                                    
+                                    if med3_nombre:
+                                        datos_receta.update({
+                                            "medicamento3_nombre": med3_nombre,
+                                            "medicamento3_dosis": med3_dosis,
+                                            "medicamento3_frecuencia": med3_frecuencia,
+                                            "medicamento3_duracion": med3_duracion,
+                                            "medicamento3_via": med3_via
+                                        })
+                                    
+                                    if med4_nombre:
+                                        datos_receta.update({
+                                            "medicamento4_nombre": med4_nombre,
+                                            "medicamento4_dosis": med4_dosis,
+                                            "medicamento4_frecuencia": med4_frecuencia,
+                                            "medicamento4_duracion": med4_duracion,
+                                            "medicamento4_via": med4_via
+                                        })
+                                    
+                                    if med5_nombre:
+                                        datos_receta.update({
+                                            "medicamento5_nombre": med5_nombre,
+                                            "medicamento5_dosis": med5_dosis,
+                                            "medicamento5_frecuencia": med5_frecuencia,
+                                            "medicamento5_duracion": med5_duracion,
+                                            "medicamento5_via": med5_via
+                                        })
+                                    
+                                    response = api_request("POST", "/api/recetas", datos_receta)
+                                    if response and response.status_code == 200:
+                                        st.success("✅ Receta emitida exitosamente")
+                                        st.balloons()
+                                    elif response:
+                                        st.error(f"❌ Error: {response.json().get('detail')}")
+            
+            with tab2:
+                st.subheader("📋 Historial de Recetas")
+                
+                response = api_request("GET", "/api/pacientes")
+                if response and response.status_code == 200:
+                    pacientes = response.json()
+                    
+                    if pacientes:
+                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
+                                             for p in pacientes}
+                        
+                        paciente_seleccionado = st.selectbox("Buscar recetas del paciente", list(opciones_pacientes.keys()), key="historial_paciente")
+                        paciente_id = opciones_pacientes[paciente_seleccionado]
+                        
+                        if st.button("🔍 Buscar Recetas"):
+                            response = api_request("GET", f"/api/recetas/paciente/{paciente_id}")
+                            
+                            if response and response.status_code == 200:
+                                recetas = response.json()
+                                
+                                if recetas:
+                                    st.write(f"**Total: {len(recetas)} receta(s)**")
+                                    st.divider()
+                                    
+                                    for r in recetas:
+                                        with st.expander(f"📄 Receta #{r['id']} - {r['fecha_emision'][:10]} - Dr. {r.get('medico_nombre', 'N/A')}"):
+                                            st.write("**Medicamentos:**")
+                                            
+                                            if r.get('medicamento1_nombre'):
+                                                st.markdown(f"**1. {r['medicamento1_nombre']}**")
+                                                st.write(f"   • Dosis: {r['medicamento1_dosis']}")
+                                                st.write(f"   • Frecuencia: {r['medicamento1_frecuencia']}")
+                                                st.write(f"   • Duración: {r['medicamento1_duracion']}")
+                                                st.write(f"   • Vía: {r['medicamento1_via']}")
+                                            
+                                            if r.get('medicamento2_nombre'):
+                                                st.markdown(f"**2. {r['medicamento2_nombre']}**")
+                                                st.write(f"   • Dosis: {r['medicamento2_dosis']}")
+                                                st.write(f"   • Frecuencia: {r['medicamento2_frecuencia']}")
+                                                st.write(f"   • Duración: {r['medicamento2_duracion']}")
+                                                st.write(f"   • Vía: {r['medicamento2_via']}")
+                                            
+                                            if r.get('medicamento3_nombre'):
+                                                st.markdown(f"**3. {r['medicamento3_nombre']}**")
+                                                st.write(f"   • Dosis: {r['medicamento3_dosis']}")
+                                                st.write(f"   • Frecuencia: {r['medicamento3_frecuencia']}")
+                                                st.write(f"   • Duración: {r['medicamento3_duracion']}")
+                                                st.write(f"   • Vía: {r['medicamento3_via']}")
+                                            
+                                            if r.get('medicamento4_nombre'):
+                                                st.markdown(f"**4. {r['medicamento4_nombre']}**")
+                                                st.write(f"   • Dosis: {r['medicamento4_dosis']}")
+                                                st.write(f"   • Frecuencia: {r['medicamento4_frecuencia']}")
+                                                st.write(f"   • Duración: {r['medicamento4_duracion']}")
+                                                st.write(f"   • Vía: {r['medicamento4_via']}")
+                                            
+                                            if r.get('medicamento5_nombre'):
+                                                st.markdown(f"**5. {r['medicamento5_nombre']}**")
+                                                st.write(f"   • Dosis: {r['medicamento5_dosis']}")
+                                                st.write(f"   • Frecuencia: {r['medicamento5_frecuencia']}")
+                                                st.write(f"   • Duración: {r['medicamento5_duracion']}")
+                                                st.write(f"   • Vía: {r['medicamento5_via']}")
+                                            
+                                            if r.get('indicaciones_generales'):
+                                                st.markdown("**Indicaciones Generales:**")
+                                                st.info(r['indicaciones_generales'])
+                                            
+                                            st.divider()
+                                            
+                                            st.divider()
+                                            
+                                            # BOTÓN PARA GENERAR Y DESCARGAR PDF DIRECTAMENTE
+                                            pdf_response = api_request("GET", f"/api/recetas/{r['id']}/pdf")
+                                            if pdf_response and pdf_response.status_code == 200:
+                                                st.download_button(
+                                                    label="📄 Descargar PDF",
+                                                    data=pdf_response.content,
+                                                    file_name=f"receta_{r['id']}.pdf",
+                                                    mime="application/pdf",
+                                                    key=f"download_pdf_{r['id']}",
+                                                    use_container_width=True
+                                                )
+                                            else:
+                                                st.error("Error al generar PDF. Verifica que el backend esté corriendo.")
+                                else:
+                                    st.info("📭 No hay recetas para este paciente")
     
     elif menu == "FHIR - Interoperabilidad":
         st.header("🌐 FHIR - Interoperabilidad de Datos")

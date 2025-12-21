@@ -11,11 +11,13 @@ class Usuario(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     nombre_completo = Column(String)
-    rol = Column(String)  # medico, enfermera, admin
+    codigo_medico = Column(String, nullable=True)  # Nuevo campo
+    rol = Column(String)  # medico, enfermera, recepcion, admin
     activo = Column(Boolean, default=True)
     creado_en = Column(DateTime, default=datetime.utcnow)
     
     citas_medico = relationship("Cita", back_populates="medico_rel", foreign_keys="Cita.medico_id")
+    recetas = relationship("Receta", back_populates="medico_rel")
 
 class Paciente(Base):
     __tablename__ = "pacientes"
@@ -33,6 +35,7 @@ class Paciente(Base):
     
     consultas = relationship("Consulta", back_populates="paciente")
     citas = relationship("Cita", back_populates="paciente_rel")
+    recetas = relationship("Receta", back_populates="paciente_rel")
 
 class Consulta(Base):
     __tablename__ = "consultas"
@@ -66,3 +69,56 @@ class Cita(Base):
     
     paciente_rel = relationship("Paciente", back_populates="citas")
     medico_rel = relationship("Usuario", back_populates="citas_medico", foreign_keys=[medico_id])
+
+class Receta(Base):
+    __tablename__ = "recetas"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    paciente_id = Column(Integer, ForeignKey("pacientes.id"))
+    medico_id = Column(Integer, ForeignKey("usuarios.id"))
+    fecha_emision = Column(DateTime, default=datetime.utcnow)
+    
+    # Medicamento 1 (obligatorio)
+    medicamento1_nombre = Column(String, nullable=False)
+    medicamento1_dosis = Column(String, nullable=False)
+    medicamento1_frecuencia = Column(String, nullable=False)
+    medicamento1_duracion = Column(String, nullable=False)
+    medicamento1_via = Column(String, nullable=False)
+    
+    # Medicamento 2 (opcional)
+    medicamento2_nombre = Column(String, nullable=True)
+    medicamento2_dosis = Column(String, nullable=True)
+    medicamento2_frecuencia = Column(String, nullable=True)
+    medicamento2_duracion = Column(String, nullable=True)
+    medicamento2_via = Column(String, nullable=True)
+    
+    # Medicamento 3 (opcional)
+    medicamento3_nombre = Column(String, nullable=True)
+    medicamento3_dosis = Column(String, nullable=True)
+    medicamento3_frecuencia = Column(String, nullable=True)
+    medicamento3_duracion = Column(String, nullable=True)
+    medicamento3_via = Column(String, nullable=True)
+    
+    # Medicamento 4 (opcional)
+    medicamento4_nombre = Column(String, nullable=True)
+    medicamento4_dosis = Column(String, nullable=True)
+    medicamento4_frecuencia = Column(String, nullable=True)
+    medicamento4_duracion = Column(String, nullable=True)
+    medicamento4_via = Column(String, nullable=True)
+    
+    # Medicamento 5 (opcional)
+    medicamento5_nombre = Column(String, nullable=True)
+    medicamento5_dosis = Column(String, nullable=True)
+    medicamento5_frecuencia = Column(String, nullable=True)
+    medicamento5_duracion = Column(String, nullable=True)
+    medicamento5_via = Column(String, nullable=True)
+    
+    # Indicaciones generales
+    indicaciones_generales = Column(Text, nullable=True)
+    
+    # Estado
+    activa = Column(Boolean, default=True)
+    
+    # Relaciones
+    paciente_rel = relationship("Paciente", back_populates="recetas")
+    medico_rel = relationship("Usuario", back_populates="recetas")
