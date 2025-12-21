@@ -11,7 +11,7 @@ class Usuario(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     nombre_completo = Column(String)
-    rol = Column(String)  # medico, enfermera, admin
+    rol = Column(String)
     creado_en = Column(DateTime, default=datetime.utcnow)
 
 class Paciente(Base):
@@ -29,3 +29,15 @@ class Paciente(Base):
     creado_en = Column(DateTime, default=datetime.utcnow)
     
     consultas = relationship("Consulta", back_populates="paciente")
+
+class Consulta(Base):
+    __tablename__ = "consultas"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    paciente_id = Column(Integer, ForeignKey("pacientes.id"))
+    fecha = Column(DateTime, default=datetime.utcnow)
+    motivo = Column(Text)
+    diagnostico = Column(Text)
+    tratamiento = Column(Text)
+    
+    paciente = relationship("Paciente", back_populates="consultas")
