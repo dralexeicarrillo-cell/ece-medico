@@ -854,6 +854,74 @@ def cancelar_orden(
     db.commit()
     
     return {"mensaje": "Orden cancelada exitosamente"}
+
+# ==================== ÓRDENES LABORATORIO - FHIR ====================
+
+@app.get("/api/laboratorio/{orden_id}/fhir")
+def exportar_orden_fhir(
+    orden_id: int,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Exportar orden de laboratorio a formato FHIR Bundle (DiagnosticReport + Observations)"""
+    orden = db.query(models.OrdenLaboratorio).filter(models.OrdenLaboratorio.id == orden_id).first()
+    if not orden:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+    
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == orden.paciente_id).first()
+    medico = db.query(models.Usuario).filter(models.Usuario.id == orden.medico_id).first()
+    
+    return fhir_converter.orden_laboratorio_to_fhir_bundle(orden, paciente, medico)
+
+
+@app.post("/api/laboratorio/fhir/import")
+def importar_orden_fhir(
+    fhir_bundle: dict,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Importar orden de laboratorio desde formato FHIR Bundle"""
+    try:
+        orden_data = fhir_converter.fhir_to_orden_laboratorio(fhir_bundle, db)
+        
+        if "paciente_id" not in orden_data:
+            raise HTTPException(status_code=400, detail="No se pudo identificar al paciente en el Bundle FHIR")
+        
+        if not orden_data.get("examenes"):
+            raise HTTPException(status_code=400, detail="La orden debe tener al menos un examen")
+        
+        # Crear orden
+        db_orden = models.OrdenLaboratorio(
+            paciente_id=orden_data["paciente_id"],
+            medico_id=current_user.id,
+            diagnostico_presuntivo=orden_data.get("diagnostico_presuntivo"),
+            estado="pendiente"
+        )
+        
+        # Agregar exámenes (máximo 10)
+        for i, exam in enumerate(orden_data["examenes"][:10], 1):
+            setattr(db_orden, f"examen{i}_codigo_loinc", exam["codigo_loinc"])
+            setattr(db_orden, f"examen{i}_nombre", exam["nombre"])
+            setattr(db_orden, f"examen{i}_resultado", exam.get("resultado"))
+            setattr(db_orden, f"examen{i}_valor_referencia", exam.get("valor_referencia"))
+            setattr(db_orden, f"examen{i}_unidad", exam.get("unidad"))
+        
+        # Si todos los exámenes tienen resultado, marcar como completado
+        if all(exam.get("resultado") for exam in orden_data["examenes"]):
+            db_orden.estado = "completado"
+            db_orden.fecha_resultado = datetime.utcnow()
+        
+        db.add(db_orden)
+        db.commit()
+        db.refresh(db_orden)
+        
+        return {
+            "mensaje": "Orden de laboratorio importada exitosamente desde FHIR",
+            "id": db_orden.id
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error procesando FHIR: {str(e)}")
 # ==================== RECETAS - FHIR ====================
 
 @app.get("/api/recetas/{receta_id}/fhir")

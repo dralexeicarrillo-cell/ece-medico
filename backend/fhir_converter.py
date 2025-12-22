@@ -463,4 +463,219 @@ def fhir_to_receta(fhir_bundle: dict, db) -> dict:
     
     return receta_data
 
+def orden_laboratorio_to_fhir_diagnostic_report(orden: models.OrdenLaboratorio, paciente: models.Paciente, medico: models.Usuario) -> dict:
+    """Convierte una orden de laboratorio a FHIR DiagnosticReport con Observations"""
+    from fhir.resources.diagnosticreport import DiagnosticReport
+    from fhir.resources.observation import Observation, ObservationReferenceRange
+    
+    # Mapeo de estados
+    status_map = {
+        "pendiente": "registered",
+        "en_proceso": "partial",
+        "completado": "final",
+        "cancelado": "cancelled"
+    }
+    
+    # Crear DiagnosticReport
+    diagnostic_report = DiagnosticReport(
+        id=f"lab-order-{orden.id}",
+        status=status_map.get(orden.estado, "unknown"),
+        code=CodeableConcept(
+            text="Panel de Laboratorio",
+            coding=[Coding(
+                system="http://loinc.org",
+                code="11502-2",
+                display="Laboratory report"
+            )]
+        ),
+        subject=Reference(
+            reference=f"Patient/{paciente.id}",
+            display=f"{paciente.nombre} {paciente.apellidos}"
+        ),
+        performer=[Reference(
+            reference=f"Practitioner/{medico.id}",
+            display=medico.nombre_completo
+        )],
+        effectiveDateTime=orden.fecha_orden.isoformat(),
+        issued=orden.fecha_resultado.isoformat() if orden.fecha_resultado else orden.fecha_orden.isoformat(),
+        conclusionCode=[CodeableConcept(
+            text=orden.diagnostico_presuntivo or "Diagnóstico no especificado"
+        )] if orden.diagnostico_presuntivo else None
+    )
+    
+    # Agregar observaciones (resultados de exámenes)
+    observations = []
+    result_references = []
+    
+    for i in range(1, 11):
+        codigo = getattr(orden, f"examen{i}_codigo_loinc")
+        if codigo:
+            nombre = getattr(orden, f"examen{i}_nombre")
+            resultado = getattr(orden, f"examen{i}_resultado")
+            valor_ref = getattr(orden, f"examen{i}_valor_referencia")
+            unidad = getattr(orden, f"examen{i}_unidad")
+            
+            # Crear Observation
+            obs = Observation(
+                id=f"obs-{orden.id}-{i}",
+                status="final" if resultado else "registered",
+                code=CodeableConcept(
+                    text=nombre,
+                    coding=[Coding(
+                        system="http://loinc.org",
+                        code=codigo,
+                        display=nombre
+                    )]
+                ),
+                subject=Reference(
+                    reference=f"Patient/{paciente.id}",
+                    display=f"{paciente.nombre} {paciente.apellidos}"
+                ),
+                effectiveDateTime=orden.fecha_orden.isoformat(),
+                performer=[Reference(
+                    reference=f"Practitioner/{medico.id}",
+                    display=medico.nombre_completo
+                )]
+            )
+            
+            # Agregar resultado si existe
+            if resultado:
+                # Intentar parsear como número
+                try:
+                    valor_numerico = float(resultado.replace(',', '.').split()[0])
+                    from fhir.resources.quantity import Quantity
+                    obs.valueQuantity = Quantity(
+                        value=valor_numerico,
+                        unit=unidad or "",
+                        system="http://unitsofmeasure.org",
+                        code=unidad or ""
+                    )
+                except (ValueError, AttributeError):
+                    # Si no es número, guardar como string
+                    obs.valueString = resultado
+                
+                # Agregar valor de referencia
+                if valor_ref:
+                    obs.referenceRange = [ObservationReferenceRange(
+                        text=valor_ref
+                    )]
+            
+            observations.append(obs.dict())
+            result_references.append(Reference(
+                reference=f"Observation/obs-{orden.id}-{i}",
+                display=nombre
+            ))
+    
+    # Agregar referencias a resultados en el DiagnosticReport
+    if result_references:
+        diagnostic_report.result = result_references
+    
+    return {
+        "diagnosticReport": diagnostic_report.dict(),
+        "observations": observations
+    }
+
+
+def orden_laboratorio_to_fhir_bundle(orden: models.OrdenLaboratorio, paciente: models.Paciente, medico: models.Usuario) -> dict:
+    """Convierte una orden de laboratorio completa a FHIR Bundle"""
+    from fhir.resources.bundle import Bundle, BundleEntry
+    
+    entries = []
+    
+    # Agregar paciente
+    patient_fhir = paciente_to_fhir(paciente)
+    entries.append(BundleEntry(
+        fullUrl=f"urn:uuid:patient-{paciente.id}",
+        resource=patient_fhir
+    ))
+    
+    # Agregar DiagnosticReport y Observations
+    diagnostic_data = orden_laboratorio_to_fhir_diagnostic_report(orden, paciente, medico)
+    
+    # DiagnosticReport
+    entries.append(BundleEntry(
+        fullUrl=f"urn:uuid:diagnostic-report-{orden.id}",
+        resource=diagnostic_data["diagnosticReport"]
+    ))
+    
+    # Observations
+    for i, obs in enumerate(diagnostic_data["observations"], 1):
+        entries.append(BundleEntry(
+            fullUrl=f"urn:uuid:observation-{orden.id}-{i}",
+            resource=obs
+        ))
+    
+    bundle = Bundle(
+        type="collection",
+        entry=entries
+    )
+    
+    return bundle.dict()
+
+
+def fhir_to_orden_laboratorio(fhir_bundle: dict, db) -> dict:
+    """Convierte un FHIR Bundle a formato de orden de laboratorio interno"""
+    
+    orden_data = {
+        "examenes": []
+    }
+    
+    # Extraer paciente y observaciones
+    for entry in fhir_bundle.get("entry", []):
+        resource = entry.get("resource", {})
+        resource_type = resource.get("resourceType")
+        
+        if resource_type == "Patient":
+            # Buscar paciente por identificación
+            if resource.get("identifier"):
+                identificacion = resource["identifier"][0].get("value", "")
+                paciente = db.query(models.Paciente).filter(
+                    models.Paciente.identificacion == identificacion
+                ).first()
+                if paciente:
+                    orden_data["paciente_id"] = paciente.id
+        
+        elif resource_type == "DiagnosticReport":
+            # Extraer información general
+            if resource.get("conclusionCode"):
+                orden_data["diagnostico_presuntivo"] = resource["conclusionCode"][0].get("text", "")
+        
+        elif resource_type == "Observation":
+            # Extraer información del examen
+            codigo_loinc = ""
+            nombre = ""
+            resultado = ""
+            valor_ref = ""
+            unidad = ""
+            
+            if resource.get("code"):
+                if resource["code"].get("coding"):
+                    coding = resource["code"]["coding"][0]
+                    codigo_loinc = coding.get("code", "")
+                    nombre = coding.get("display", "")
+                if not nombre:
+                    nombre = resource["code"].get("text", "")
+            
+            # Extraer resultado
+            if resource.get("valueQuantity"):
+                valor = resource["valueQuantity"].get("value", "")
+                unidad = resource["valueQuantity"].get("unit", "")
+                resultado = str(valor)
+            elif resource.get("valueString"):
+                resultado = resource["valueString"]
+            
+            # Extraer valor de referencia
+            if resource.get("referenceRange"):
+                valor_ref = resource["referenceRange"][0].get("text", "")
+            
+            if codigo_loinc and nombre:
+                orden_data["examenes"].append({
+                    "codigo_loinc": codigo_loinc,
+                    "nombre": nombre,
+                    "resultado": resultado,
+                    "valor_referencia": valor_ref,
+                    "unidad": unidad
+                })
+    
+    return orden_data
     return bundle.dict()

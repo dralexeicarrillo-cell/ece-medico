@@ -1101,7 +1101,7 @@ else:
         else:
             st.info("📋 FHIR (Fast Healthcare Interoperability Resources) es el estándar internacional para intercambio de información médica")
             
-            tab1, tab2, tab3 = st.tabs(["Exportar Paciente", "Exportar Receta", "Importar Receta FHIR"])
+            tab1, tab2, tab3, tab4 = st.tabs(["Exportar Paciente", "Exportar Receta", "Exportar Orden Lab", "Importar FHIR"])
             
             with tab1:
                 st.subheader("📤 Exportar Paciente a FHIR")
@@ -1111,8 +1111,7 @@ else:
                     pacientes = response.json()
                     
                     if pacientes:
-                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
-                                             for p in pacientes}
+                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] for p in pacientes}
                         
                         paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()))
                         paciente_id = opciones_pacientes[paciente_seleccionado]
@@ -1141,8 +1140,7 @@ else:
                     pacientes = response.json()
                     
                     if pacientes:
-                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] 
-                                             for p in pacientes}
+                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] for p in pacientes}
                         
                         paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()), key="export_receta_paciente")
                         paciente_id = opciones_pacientes[paciente_seleccionado]
@@ -1153,8 +1151,7 @@ else:
                             recetas = response.json()
                             
                             if recetas:
-                                opciones_recetas = {f"Receta #{r['id']} - {r['fecha_emision'][:10]}": r['id'] 
-                                                   for r in recetas}
+                                opciones_recetas = {f"Receta #{r['id']} - {r['fecha_emision'][:10]}": r['id'] for r in recetas}
                                 
                                 receta_seleccionada = st.selectbox("Seleccionar Receta", list(opciones_recetas.keys()))
                                 receta_id = opciones_recetas[receta_seleccionada]
@@ -1178,10 +1175,57 @@ else:
                                 st.info("No hay recetas para este paciente")
             
             with tab3:
-                st.subheader("📥 Importar Receta desde FHIR Bundle")
+                st.subheader("📤 Exportar Orden de Laboratorio a FHIR")
+                
+                response = api_request("GET", "/api/pacientes")
+                if response and response.status_code == 200:
+                    pacientes = response.json()
+                    
+                    if pacientes:
+                        opciones_pacientes = {f"{p['nombre']} {p['apellidos']} - {p['identificacion']}": p['id'] for p in pacientes}
+                        
+                        paciente_seleccionado = st.selectbox("Seleccionar Paciente", list(opciones_pacientes.keys()), key="export_lab_paciente")
+                        paciente_id = opciones_pacientes[paciente_seleccionado]
+                        
+                        # Obtener órdenes del paciente
+                        response = api_request("GET", f"/api/laboratorio/paciente/{paciente_id}")
+                        if response and response.status_code == 200:
+                            ordenes = response.json()
+                            
+                            if ordenes:
+                                opciones_ordenes = {f"Orden #{o['id']} - {o['fecha_orden'][:10]} - {o['estado']}": o['id'] for o in ordenes}
+                                
+                                orden_seleccionada = st.selectbox("Seleccionar Orden", list(opciones_ordenes.keys()))
+                                orden_id = opciones_ordenes[orden_seleccionada]
+                                
+                                if st.button("📥 Exportar Orden a FHIR DiagnosticReport"):
+                                    response = api_request("GET", f"/api/laboratorio/{orden_id}/fhir")
+                                    
+                                    if response and response.status_code == 200:
+                                        fhir_data = response.json()
+                                        st.success("✅ Orden exportada a FHIR Bundle (DiagnosticReport + Observations)")
+                                        
+                                        # Mostrar resumen
+                                        st.info(f"📊 Bundle contiene: 1 Paciente, 1 DiagnosticReport, {len(fhir_data.get('entry', [])) - 2} Observations")
+                                        
+                                        st.json(fhir_data)
+                                        
+                                        st.download_button(
+                                            label="⬇️ Descargar FHIR Bundle (JSON)",
+                                            data=json.dumps(fhir_data, indent=2),
+                                            file_name=f"orden_lab_{orden_id}_fhir_bundle.json",
+                                            mime="application/json"
+                                        )
+                            else:
+                                st.info("No hay órdenes de laboratorio para este paciente")
+            
+            with tab4:
+                st.subheader("📥 Importar desde FHIR Bundle")
+                
+                tipo_import = st.radio("Tipo de importación:", ["Receta", "Orden de Laboratorio"])
                 
                 if st.session_state.usuario['rol'] not in ['medico', 'admin']:
-                    st.error("❌ Solo médicos y administradores pueden importar recetas.")
+                    st.error("❌ Solo médicos y administradores pueden importar datos.")
                 else:
                     st.info("⚠️ El paciente debe estar previamente registrado en el sistema")
                     
@@ -1191,19 +1235,22 @@ else:
                         placeholder='{"resourceType": "Bundle", "type": "collection", ...}'
                     )
                     
-                    if st.button("⬆️ Importar Receta"):
+                    if st.button("⬆️ Importar desde FHIR"):
                         if not fhir_json:
                             st.error("Por favor pega el JSON del FHIR Bundle")
                         else:
                             try:
                                 fhir_data = json.loads(fhir_json)
                                 
-                                response = api_request("POST", "/api/recetas/fhir/import", fhir_data)
+                                if tipo_import == "Receta":
+                                    response = api_request("POST", "/api/recetas/fhir/import", fhir_data)
+                                else:
+                                    response = api_request("POST", "/api/laboratorio/fhir/import", fhir_data)
                                 
                                 if response and response.status_code == 200:
                                     result = response.json()
                                     st.success(f"✅ {result['mensaje']}")
-                                    st.info(f"ID de la nueva receta: {result['id']}")
+                                    st.info(f"ID: {result['id']}")
                                     st.balloons()
                                 elif response:
                                     st.error(f"❌ Error: {response.json().get('detail')}")
