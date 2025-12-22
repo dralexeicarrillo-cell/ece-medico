@@ -9,6 +9,7 @@ from typing import Optional, List
 from backend.database import engine, get_db, Base
 from backend import models, auth, fhir_converter
 from backend.pdf_generator import generar_receta_pdf
+from backend.loinc_catalog import EXAMENES_LOINC, obtener_examenes_por_categoria, buscar_examen
 
 Base.metadata.create_all(bind=engine)
 
@@ -111,7 +112,24 @@ class RecetaCreate(BaseModel):
     medicamento5_duracion: Optional[str] = None
     medicamento5_via: Optional[str] = None
     indicaciones_generales: Optional[str] = None
+class ExamenLaboratorio(BaseModel):
+    codigo_loinc: str
+    nombre: str
+    resultado: Optional[str] = None
+    valor_referencia: Optional[str] = None
+    unidad: Optional[str] = None
 
+class OrdenLaboratorioCreate(BaseModel):
+    paciente_id: int
+    consulta_id: Optional[int] = None
+    examenes: List[ExamenLaboratorio]
+    indicaciones_clinicas: Optional[str] = None
+    diagnostico_presuntivo: Optional[str] = None
+    urgente: bool = False
+
+class ResultadoExamen(BaseModel):
+    examen_numero: int
+    resultado: str
 @app.get("/")
 def root():
     return {"mensaje": "API del Expediente Clínico Electrónico con FHIR"}
@@ -684,6 +702,158 @@ async def descargar_receta_pdf(
         media_type='application/pdf',
         filename=f"receta_{receta_id}.pdf"
     )
+# ==================== ÓRDENES DE LABORATORIO ====================
+
+@app.get("/api/laboratorio/catalogo")
+def obtener_catalogo_loinc(
+    current_user: models.Usuario = Depends(auth.get_current_user)
+):
+    """Obtener catálogo de exámenes LOINC por categorías"""
+    return obtener_examenes_por_categoria()
+
+@app.get("/api/laboratorio/buscar/{termino}")
+def buscar_examenes_loinc(
+    termino: str,
+    current_user: models.Usuario = Depends(auth.get_current_user)
+):
+    """Buscar exámenes por término"""
+    return buscar_examen(termino)
+
+@app.post("/api/laboratorio/orden")
+def crear_orden_laboratorio(
+    orden: OrdenLaboratorioCreate,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Crear orden de laboratorio - Solo médicos"""
+    paciente = db.query(models.Paciente).filter(models.Paciente.id == orden.paciente_id).first()
+    if not paciente:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado")
+    
+    if not orden.examenes or len(orden.examenes) == 0:
+        raise HTTPException(status_code=400, detail="Debe incluir al menos un examen")
+    
+    if len(orden.examenes) > 10:
+        raise HTTPException(status_code=400, detail="Máximo 10 exámenes por orden")
+    
+    # Crear orden
+    db_orden = models.OrdenLaboratorio(
+        paciente_id=orden.paciente_id,
+        medico_id=current_user.id,
+        consulta_id=orden.consulta_id,
+        indicaciones_clinicas=orden.indicaciones_clinicas,
+        diagnostico_presuntivo=orden.diagnostico_presuntivo,
+        urgente=orden.urgente,
+        estado="pendiente"
+    )
+    
+    # Agregar exámenes
+    for i, examen in enumerate(orden.examenes, 1):
+        setattr(db_orden, f"examen{i}_codigo_loinc", examen.codigo_loinc)
+        setattr(db_orden, f"examen{i}_nombre", examen.nombre)
+        setattr(db_orden, f"examen{i}_valor_referencia", examen.valor_referencia)
+        setattr(db_orden, f"examen{i}_unidad", examen.unidad)
+    
+    db.add(db_orden)
+    db.commit()
+    db.refresh(db_orden)
+    
+    return {"mensaje": "Orden de laboratorio creada exitosamente", "id": db_orden.id}
+
+@app.get("/api/laboratorio/paciente/{paciente_id}")
+def obtener_ordenes_paciente(
+    paciente_id: int,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Ver órdenes de laboratorio del paciente"""
+    ordenes = db.query(models.OrdenLaboratorio).filter(
+        models.OrdenLaboratorio.paciente_id == paciente_id
+    ).order_by(models.OrdenLaboratorio.fecha_orden.desc()).all()
+    
+    resultado = []
+    for orden in ordenes:
+        medico = db.query(models.Usuario).filter(models.Usuario.id == orden.medico_id).first()
+        
+        # Recopilar exámenes
+        examenes = []
+        for i in range(1, 11):
+            codigo = getattr(orden, f"examen{i}_codigo_loinc")
+            if codigo:
+                examenes.append({
+                    "numero": i,
+                    "codigo_loinc": codigo,
+                    "nombre": getattr(orden, f"examen{i}_nombre"),
+                    "resultado": getattr(orden, f"examen{i}_resultado"),
+                    "valor_referencia": getattr(orden, f"examen{i}_valor_referencia"),
+                    "unidad": getattr(orden, f"examen{i}_unidad")
+                })
+        
+        resultado.append({
+            "id": orden.id,
+            "fecha_orden": orden.fecha_orden.isoformat(),
+            "medico_nombre": medico.nombre_completo if medico else "Desconocido",
+            "estado": orden.estado,
+            "urgente": orden.urgente,
+            "indicaciones_clinicas": orden.indicaciones_clinicas,
+            "diagnostico_presuntivo": orden.diagnostico_presuntivo,
+            "examenes": examenes,
+            "fecha_resultado": orden.fecha_resultado.isoformat() if orden.fecha_resultado else None
+        })
+    
+    return resultado
+
+@app.put("/api/laboratorio/{orden_id}/resultado")
+def agregar_resultado(
+    orden_id: int,
+    resultados: List[ResultadoExamen],
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Agregar resultados a una orden - Personal médico"""
+    orden = db.query(models.OrdenLaboratorio).filter(models.OrdenLaboratorio.id == orden_id).first()
+    if not orden:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+    
+    # Actualizar resultados
+    for res in resultados:
+        setattr(orden, f"examen{res.examen_numero}_resultado", res.resultado)
+    
+    # Verificar si todos los exámenes tienen resultado
+    todos_completos = True
+    for i in range(1, 11):
+        codigo = getattr(orden, f"examen{i}_codigo_loinc")
+        if codigo:
+            resultado = getattr(orden, f"examen{i}_resultado")
+            if not resultado:
+                todos_completos = False
+                break
+    
+    if todos_completos:
+        orden.estado = "completado"
+        orden.fecha_resultado = datetime.utcnow()
+    else:
+        orden.estado = "en_proceso"
+    
+    db.commit()
+    
+    return {"mensaje": "Resultados actualizados exitosamente"}
+
+@app.delete("/api/laboratorio/{orden_id}")
+def cancelar_orden(
+    orden_id: int,
+    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    db: Session = Depends(get_db)
+):
+    """Cancelar orden de laboratorio"""
+    orden = db.query(models.OrdenLaboratorio).filter(models.OrdenLaboratorio.id == orden_id).first()
+    if not orden:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+    
+    orden.estado = "cancelado"
+    db.commit()
+    
+    return {"mensaje": "Orden cancelada exitosamente"}
 # ==================== RECETAS - FHIR ====================
 
 @app.get("/api/recetas/{receta_id}/fhir")

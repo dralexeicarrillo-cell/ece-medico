@@ -190,5 +190,12 @@ pandas
 2. Revisará el estado del proyecto
 3. Te ayudará a continuar donde lo dejamos
 
+### 7. FHIR - Interoperabilidad
+- Exportar pacientes a FHIR Patient
+- Exportar recetas a FHIR MedicationRequest Bundle
+- Importar recetas desde FHIR Bundle
+- Descargar recursos FHIR en JSON
+- Estándar HL7 FHIR R4
+
 **O especifica directamente qué quieres desarrollar:**
 "Quiero agregar exportación de recetas a PDF al sistema ECE"
