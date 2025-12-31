@@ -7,9 +7,21 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional, List
 from backend.database import engine, get_db, Base
-from backend import models, auth, fhir_converter
+from backend import models, fhir_converter
 from backend.pdf_generator import generar_receta_pdf
 from backend.loinc_catalog import EXAMENES_LOINC, obtener_examenes_por_categoria, buscar_examen
+from backend.auth import (
+    get_current_user, 
+    authenticate_user, 
+    create_access_token, 
+    get_password_hash,
+    require_roles,
+    get_current_admin,
+    get_current_medico,
+    get_current_recepcion_or_admin,
+    get_current_medico_or_admin,
+    ACCESS_TOKEN_EXPIRE_MINUTES
+)
 
 Base.metadata.create_all(bind=engine)
 
@@ -155,11 +167,11 @@ def register(usuario: UsuarioCreate, db: Session = Depends(get_db)):
     if usuario.rol not in roles_validos:
         raise HTTPException(status_code=400, detail=f"Rol inválido. Roles válidos: {', '.join(roles_validos)}")
     
-    hashed_password = auth.get_password_hash(usuario.password)
+    password_hash = get_password_hash(usuario.password)
     new_user = models.Usuario(
         username=usuario.username,
         email=usuario.email,
-        hashed_password=hashed_password,
+        password_hash=password_hash,
         nombre_completo=usuario.nombre_completo,
         rol=usuario.rol,
         activo=True
@@ -173,7 +185,7 @@ def register(usuario: UsuarioCreate, db: Session = Depends(get_db)):
 
 @app.post("/api/auth/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = auth.authenticate_user(db, form_data.username, form_data.password)
+    user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -184,8 +196,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     if not user.activo:
         raise HTTPException(status_code=400, detail="Usuario inactivo")
     
-    access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = auth.create_access_token(
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
     
@@ -203,14 +215,14 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     }
 
 @app.get("/api/auth/me", response_model=UsuarioResponse)
-def get_me(current_user: models.Usuario = Depends(auth.get_current_user)):
+def get_me(current_user: models.Usuario = Depends(get_current_user)):
     return current_user
 
 # ==================== USUARIOS ====================
 
 @app.get("/api/usuarios")
 def listar_usuarios(
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Listar todos los usuarios activos"""
@@ -221,7 +233,7 @@ def listar_usuarios(
 
 @app.get("/api/pacientes")
 def listar_pacientes(
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Listar pacientes - Acceso para todos los roles autenticados"""
@@ -231,7 +243,7 @@ def listar_pacientes(
 @app.get("/api/pacientes/{paciente_id}")
 def obtener_paciente(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Obtener paciente - Acceso para todos los roles autenticados"""
@@ -243,7 +255,7 @@ def obtener_paciente(
 @app.post("/api/pacientes")
 def crear_paciente(
     paciente: PacienteCreate,
-    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    current_user: models.Usuario = Depends(require_roles(["recepcion", "admin", "medico"])),
     db: Session = Depends(get_db)
 ):
     """Crear paciente - Solo recepción, médicos y admin"""
@@ -275,7 +287,7 @@ def crear_paciente(
 def actualizar_paciente(
     paciente_id: int,
     paciente_update: PacienteUpdate,
-    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["recepcion", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Actualizar datos de contacto del paciente - Solo recepción y admin"""
@@ -301,7 +313,7 @@ def actualizar_paciente(
 @app.post("/api/consultas")
 def crear_consulta(
     consulta: ConsultaCreate,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Crear consulta - Solo médicos y admin"""
@@ -329,7 +341,7 @@ def crear_consulta(
 @app.get("/api/consultas/paciente/{paciente_id}")
 def obtener_consultas_paciente(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Ver consultas - Solo personal médico"""
@@ -342,7 +354,7 @@ def obtener_consultas_paciente(
 @app.get("/api/consultas/{consulta_id}")
 def obtener_consulta(
     consulta_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Ver consulta específica - Solo personal médico"""
@@ -356,7 +368,7 @@ def obtener_consulta(
 @app.post("/api/citas")
 def crear_cita(
     cita: CitaCreate,
-    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    current_user: models.Usuario = Depends(require_roles(["recepcion", "admin", "medico"])),
     db: Session = Depends(get_db)
 ):
     """Crear cita - Recepción, médicos y admin"""
@@ -404,7 +416,7 @@ def listar_citas(
     medico_id: Optional[int] = None,
     paciente_id: Optional[int] = None,
     estado: Optional[str] = None,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Listar citas - Todos los roles autenticados"""
@@ -451,7 +463,7 @@ def listar_citas(
 @app.get("/api/citas/{cita_id}")
 def obtener_cita(
     cita_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Obtener cita - Todos los roles autenticados"""
@@ -479,7 +491,7 @@ def obtener_cita(
 def actualizar_cita(
     cita_id: int,
     cita_update: CitaUpdate,
-    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    current_user: models.Usuario = Depends(require_roles(["recepcion", "admin", "medico"])),
     db: Session = Depends(get_db)
 ):
     """Actualizar cita - Recepción, médicos y admin"""
@@ -508,7 +520,7 @@ def actualizar_cita(
 @app.delete("/api/citas/{cita_id}")
 def cancelar_cita(
     cita_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    current_user: models.Usuario = Depends(require_roles(["recepcion", "admin", "medico"])),
     db: Session = Depends(get_db)
 ):
     """Cancelar cita - Recepción, médicos y admin"""
@@ -528,7 +540,7 @@ def cancelar_cita(
 @app.post("/api/recetas")
 def crear_receta(
     receta: RecetaCreate,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Crear receta médica - Solo médicos y admin"""
@@ -577,7 +589,7 @@ def crear_receta(
 @app.get("/api/recetas/paciente/{paciente_id}")
 def obtener_recetas_paciente(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Ver recetas del paciente - Personal médico"""
@@ -628,7 +640,7 @@ def obtener_recetas_paciente(
 @app.get("/api/recetas/{receta_id}/pdf")
 async def descargar_receta_pdf(
     receta_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Genera y descarga PDF de receta"""
@@ -706,7 +718,7 @@ async def descargar_receta_pdf(
 
 @app.get("/api/laboratorio/catalogo")
 def obtener_catalogo_loinc(
-    current_user: models.Usuario = Depends(auth.get_current_user)
+    current_user: models.Usuario = Depends(get_current_user)
 ):
     """Obtener catálogo de exámenes LOINC por categorías"""
     return obtener_examenes_por_categoria()
@@ -714,7 +726,7 @@ def obtener_catalogo_loinc(
 @app.get("/api/laboratorio/buscar/{termino}")
 def buscar_examenes_loinc(
     termino: str,
-    current_user: models.Usuario = Depends(auth.get_current_user)
+    current_user: models.Usuario = Depends(get_current_user)
 ):
     """Buscar exámenes por término"""
     return buscar_examen(termino)
@@ -722,7 +734,7 @@ def buscar_examenes_loinc(
 @app.post("/api/laboratorio/orden")
 def crear_orden_laboratorio(
     orden: OrdenLaboratorioCreate,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Crear orden de laboratorio - Solo médicos"""
@@ -763,7 +775,7 @@ def crear_orden_laboratorio(
 @app.get("/api/laboratorio/paciente/{paciente_id}")
 def obtener_ordenes_paciente(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Ver órdenes de laboratorio del paciente"""
@@ -807,7 +819,7 @@ def obtener_ordenes_paciente(
 def agregar_resultado(
     orden_id: int,
     resultados: List[ResultadoExamen],
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Agregar resultados a una orden - Personal médico"""
@@ -842,7 +854,7 @@ def agregar_resultado(
 @app.delete("/api/laboratorio/{orden_id}")
 def cancelar_orden(
     orden_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Cancelar orden de laboratorio"""
@@ -860,7 +872,7 @@ def cancelar_orden(
 @app.get("/api/laboratorio/{orden_id}/fhir")
 def exportar_orden_fhir(
     orden_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Exportar orden de laboratorio a formato FHIR Bundle (DiagnosticReport + Observations)"""
@@ -877,7 +889,7 @@ def exportar_orden_fhir(
 @app.post("/api/laboratorio/fhir/import")
 def importar_orden_fhir(
     fhir_bundle: dict,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Importar orden de laboratorio desde formato FHIR Bundle"""
@@ -927,7 +939,7 @@ def importar_orden_fhir(
 @app.get("/api/recetas/{receta_id}/fhir")
 def exportar_receta_fhir(
     receta_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Exportar receta a formato FHIR Bundle"""
@@ -944,7 +956,7 @@ def exportar_receta_fhir(
 @app.post("/api/recetas/fhir/import")
 def importar_receta_fhir(
     fhir_bundle: dict,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "admin"])),
     db: Session = Depends(get_db)
 ):
     """Importar receta desde formato FHIR Bundle"""
@@ -1008,7 +1020,7 @@ def importar_receta_fhir(
 @app.get("/fhir/Patient/{paciente_id}")
 def get_fhir_patient(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.get_current_user),
+    current_user: models.Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     paciente = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
@@ -1020,7 +1032,7 @@ def get_fhir_patient(
 @app.post("/fhir/Patient")
 def create_fhir_patient(
     fhir_patient: dict,
-    current_user: models.Usuario = Depends(auth.require_roles(["recepcion", "admin", "medico"])),
+    current_user: models.Usuario = Depends(require_roles(["recepcion", "admin", "medico"])),
     db: Session = Depends(get_db)
 ):
     try:
@@ -1055,7 +1067,7 @@ def create_fhir_patient(
 @app.get("/fhir/Encounter/{consulta_id}")
 def get_fhir_encounter(
     consulta_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
@@ -1069,7 +1081,7 @@ def get_fhir_encounter(
 @app.get("/fhir/Bundle/consulta/{consulta_id}")
 def get_fhir_bundle(
     consulta_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     consulta = db.query(models.Consulta).filter(models.Consulta.id == consulta_id).first()
@@ -1083,7 +1095,7 @@ def get_fhir_bundle(
 @app.get("/fhir/Bundle/paciente/{paciente_id}")
 def get_patient_bundle(
     paciente_id: int,
-    current_user: models.Usuario = Depends(auth.require_roles(["medico", "enfermera", "admin"])),
+    current_user: models.Usuario = Depends(require_roles(["medico", "enfermera", "admin"])),
     db: Session = Depends(get_db)
 ):
     from fhir.resources.bundle import Bundle, BundleEntry
@@ -1117,3 +1129,107 @@ def get_patient_bundle(
     )
     
     return bundle.dict()
+# ==================== IMAGENOLOGÍA ====================
+
+@app.post("/api/imagenologia/orden")
+async def crear_orden_imagenologia(
+    datos: dict,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Crear nueva orden de imagenología"""
+    try:
+        nueva_orden = models.OrdenImagenologia(
+            paciente_id=datos["paciente_id"],
+            medico_id=current_user.id,
+            diagnostico_presuntivo=datos.get("diagnostico_presuntivo", ""),
+            indicaciones_clinicas=datos.get("indicaciones_clinicas", ""),
+            uso_contraste=datos.get("uso_contraste", False),
+            urgente=datos.get("urgente", False),
+            observaciones=datos.get("observaciones", ""),
+            estado="pendiente"
+        )
+        
+        db.add(nueva_orden)
+        db.flush()
+        
+        for idx, estudio in enumerate(datos["estudios"], 1):
+            nuevo_estudio = models.EstudioImagenologia(
+                orden_id=nueva_orden.id,
+                numero=idx,
+                categoria=estudio["categoria"],
+                nombre=estudio["nombre"],
+                estado="pendiente"
+            )
+            db.add(nuevo_estudio)
+        
+        db.commit()
+        db.refresh(nueva_orden)
+        
+        return {"mensaje": "Orden creada exitosamente", "id": nueva_orden.id}
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/imagenologia/paciente/{paciente_id}")
+async def obtener_ordenes_imagenologia(
+    paciente_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtener órdenes de imagenología de un paciente"""
+    ordenes = db.query(models.OrdenImagenologia).filter(
+        models.OrdenImagenologia.paciente_id == paciente_id
+    ).all()
+    
+    resultado = []
+    for orden in ordenes:
+        medico = db.query(models.Usuario).filter(models.Usuario.id == orden.medico_id).first()
+        estudios = db.query(models.EstudioImagenologia).filter(
+            models.EstudioImagenologia.orden_id == orden.id
+        ).all()
+        
+        resultado.append({
+            "id": orden.id,
+            "fecha_orden": orden.fecha_orden.isoformat(),
+            "medico_nombre": medico.nombre_completo if medico else "N/A",
+            "diagnostico_presuntivo": orden.diagnostico_presuntivo,
+            "indicaciones_clinicas": orden.indicaciones_clinicas,
+            "uso_contraste": orden.uso_contraste,
+            "urgente": orden.urgente,
+            "observaciones": orden.observaciones,
+            "estado": orden.estado,
+            "fecha_resultado": orden.fecha_resultado.isoformat() if orden.fecha_resultado else None,
+            "informe_url": orden.informe_url,
+            "estudios": [{
+                "numero": e.numero,
+                "categoria": e.categoria,
+                "nombre": e.nombre,
+                "resultado": e.resultado,
+                "estado": e.estado
+            } for e in estudios]
+        })
+    
+    return resultado
+
+
+@app.delete("/api/imagenologia/{orden_id}")
+async def cancelar_orden_imagenologia(
+    orden_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Cancelar orden de imagenología"""
+    if current_user.rol not in ["medico", "admin"]:
+        raise HTTPException(status_code=403, detail="No autorizado")
+    
+    orden = db.query(models.OrdenImagenologia).filter(models.OrdenImagenologia.id == orden_id).first()
+    if not orden:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+    
+    orden.estado = "cancelado"
+    db.commit()
+    
+    return {"mensaje": "Orden cancelada"}

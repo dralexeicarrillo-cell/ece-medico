@@ -1,17 +1,17 @@
-from datetime import datetime, timedelta
-from typing import Optional, List
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+from typing import Optional, List
 from backend.database import get_db
 from backend import models
 
 # Configuración de seguridad
-SECRET_KEY = "tu-clave-secreta-muy-segura-cambiala-en-produccion"  # Cambiar en producción
+SECRET_KEY = "tu-clave-secreta-muy-segura-cambiala-en-produccion"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 horas
+ACCESS_TOKEN_EXPIRE_MINUTES = 480
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
@@ -55,13 +55,11 @@ def authenticate_user(db: Session, username: str, password: str):
     user = db.query(models.Usuario).filter(models.Usuario.username == username).first()
     if not user:
         return False
-    if not verify_password(password, user.hashed_password):
+    if not verify_password(password, user.password_hash):
         return False
     return user
 
-# Verificación de roles
 def require_roles(allowed_roles: List[str]):
-    """Decorador para verificar que el usuario tenga uno de los roles permitidos"""
     def role_checker(current_user: models.Usuario = Depends(get_current_user)):
         if current_user.rol not in allowed_roles:
             raise HTTPException(
@@ -71,9 +69,7 @@ def require_roles(allowed_roles: List[str]):
         return current_user
     return role_checker
 
-# Funciones de ayuda para roles específicos
 def get_current_admin(current_user: models.Usuario = Depends(get_current_user)):
-    """Solo administradores"""
     if current_user.rol != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -82,7 +78,6 @@ def get_current_admin(current_user: models.Usuario = Depends(get_current_user)):
     return current_user
 
 def get_current_medico(current_user: models.Usuario = Depends(get_current_user)):
-    """Solo médicos"""
     if current_user.rol != "medico":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -91,7 +86,6 @@ def get_current_medico(current_user: models.Usuario = Depends(get_current_user))
     return current_user
 
 def get_current_recepcion_or_admin(current_user: models.Usuario = Depends(get_current_user)):
-    """Recepción o Admin"""
     if current_user.rol not in ["recepcion", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -100,7 +94,6 @@ def get_current_recepcion_or_admin(current_user: models.Usuario = Depends(get_cu
     return current_user
 
 def get_current_medico_or_admin(current_user: models.Usuario = Depends(get_current_user)):
-    """Médico o Admin"""
     if current_user.rol not in ["medico", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

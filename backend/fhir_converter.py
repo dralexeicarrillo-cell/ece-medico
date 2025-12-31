@@ -497,7 +497,7 @@ def orden_laboratorio_to_fhir_diagnostic_report(orden: models.OrdenLaboratorio, 
             display=medico.nombre_completo
         )],
         effectiveDateTime=orden.fecha_orden.isoformat(),
-        issued=orden.fecha_resultado.isoformat() if orden.fecha_resultado else orden.fecha_orden.isoformat(),
+        issued=orden.fecha_resultado.isoformat() if orden.fecha_resultado else datetime.now().isoformat(),
         conclusionCode=[CodeableConcept(
             text=orden.diagnostico_presuntivo or "Diagnóstico no especificado"
         )] if orden.diagnostico_presuntivo else None

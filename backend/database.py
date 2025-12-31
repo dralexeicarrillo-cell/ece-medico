@@ -1,6 +1,7 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./ece_medico.db"
 
